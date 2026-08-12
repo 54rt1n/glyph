@@ -29,46 +29,56 @@ type Stats struct {
 	Today     int            `json:"today"`
 	ThisWeek  int            `json:"this_week"`
 	LastEtch  time.Time      `json:"last_etch"`
-	Recent    []*types.Glyph `json:"recent"` // recent sticky pins (decisions first)
+	Recent    []*types.Glyph `json:"recent,omitempty"` // recent sticky pins (decisions first)
+	Tag       string         `json:"tag,omitempty"`
 }
 
 // GetStats aggregates counts for the context summary. recentLimit caps the
 // recent sticky pins (most recent `decision` glyphs, padded with most recent
-// of any type when there are too few decisions).
-func (s *Store) GetStats(recentLimit int) (*Stats, error) {
-	st := &Stats{}
-	row := func(q string, dest *int, args ...any) error { return s.db.QueryRow(q, args...).Scan(dest) }
-	if err := row(`SELECT COUNT(*) FROM glyphs`, &st.Glyphs); err != nil {
+// of any type when there are too few decisions). f.Tag (and f.Type, if set)
+// scopes every count and the standing pin list.
+func (s *Store) GetStats(recentLimit int, f ListFilter) (*Stats, error) {
+	st := &Stats{Tag: f.Tag}
+	cond, args := listWhere(ListFilter{Type: f.Type, Tag: f.Tag})
+	inMatch := `SELECT g.id FROM glyphs g WHERE ` + cond
+
+	row := func(q string, dest *int, qargs ...any) error {
+		return s.db.QueryRow(q, qargs...).Scan(dest)
+	}
+	if err := row(`SELECT COUNT(*) FROM glyphs g WHERE `+cond, &st.Glyphs, args...); err != nil {
 		return nil, err
 	}
-	if err := row(`SELECT COUNT(*) FROM edges`, &st.Edges); err != nil {
+	if err := row(`SELECT COUNT(*) FROM edges e WHERE e.src IN (`+inMatch+`) OR e.dst IN (`+inMatch+`)`,
+		&st.Edges, append(append([]any{}, args...), args...)...); err != nil {
 		return nil, err
 	}
-	if err := row(`SELECT COUNT(*) FROM glyph_refs`, &st.Refs); err != nil {
+	if err := row(`SELECT COUNT(*) FROM glyph_refs r WHERE r.glyph_id IN (`+inMatch+`)`, &st.Refs, args...); err != nil {
 		return nil, err
 	}
-	if err := row(`SELECT COUNT(*) FROM glyph_vecs`, &st.Vecs); err != nil {
+	if err := row(`SELECT COUNT(*) FROM glyph_vecs v WHERE v.glyph_id IN (`+inMatch+`)`, &st.Vecs, args...); err != nil {
 		return nil, err
 	}
 
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	weekAgo := now.AddDate(0, 0, -7)
-	if err := row(`SELECT COUNT(*) FROM glyphs WHERE created_at >= ?`, &st.Today, midnight.Unix()); err != nil {
+	if err := row(`SELECT COUNT(*) FROM glyphs g WHERE `+cond+` AND g.created_at >= ?`,
+		&st.Today, append(append([]any{}, args...), midnight.Unix())...); err != nil {
 		return nil, err
 	}
-	if err := row(`SELECT COUNT(*) FROM glyphs WHERE created_at >= ?`, &st.ThisWeek, weekAgo.Unix()); err != nil {
+	if err := row(`SELECT COUNT(*) FROM glyphs g WHERE `+cond+` AND g.created_at >= ?`,
+		&st.ThisWeek, append(append([]any{}, args...), weekAgo.Unix())...); err != nil {
 		return nil, err
 	}
 	var last int64
-	if err := s.db.QueryRow(`SELECT COALESCE(MAX(created_at), 0) FROM glyphs`).Scan(&last); err != nil {
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(g.created_at), 0) FROM glyphs g WHERE `+cond, args...).Scan(&last); err != nil {
 		return nil, err
 	}
 	if last > 0 {
 		st.LastEtch = time.Unix(last, 0)
 	}
 
-	rows, err := s.db.Query(`SELECT COALESCE(type, ''), COUNT(*) FROM glyphs GROUP BY type ORDER BY COUNT(*) DESC`)
+	rows, err := s.db.Query(`SELECT COALESCE(g.type, ''), COUNT(*) FROM glyphs g WHERE `+cond+` GROUP BY g.type ORDER BY COUNT(*) DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +98,14 @@ func (s *Store) GetStats(recentLimit int) (*Stats, error) {
 		return nil, err
 	}
 
-	rows, err = s.db.Query(`SELECT tag, COUNT(*) FROM glyph_tags GROUP BY tag ORDER BY COUNT(*) DESC, tag LIMIT 8`)
+	tagQ := `SELECT t.tag, COUNT(*) FROM glyph_tags t WHERE t.glyph_id IN (` + inMatch + `)`
+	tagArgs := append([]any{}, args...)
+	if f.Tag != "" {
+		tagQ += ` AND t.tag != ?`
+		tagArgs = append(tagArgs, f.Tag)
+	}
+	tagQ += ` GROUP BY t.tag ORDER BY COUNT(*) DESC, t.tag LIMIT 8`
+	rows, err = s.db.Query(tagQ, tagArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -106,13 +123,17 @@ func (s *Store) GetStats(recentLimit int) (*Stats, error) {
 	}
 
 	if recentLimit > 0 {
-		decisions, _, err := s.ListGlyphs(ListFilter{Type: "decision", Limit: recentLimit})
+		decFilter := ListFilter{Type: f.Type, Tag: f.Tag, Limit: recentLimit}
+		if decFilter.Type == "" {
+			decFilter.Type = "decision"
+		}
+		decisions, _, err := s.ListGlyphs(decFilter)
 		if err != nil {
 			return nil, err
 		}
 		st.Recent = decisions
-		if len(st.Recent) < recentLimit {
-			pad, _, err := s.ListGlyphs(ListFilter{Limit: recentLimit})
+		if f.Type == "" && len(st.Recent) < recentLimit {
+			pad, _, err := s.ListGlyphs(ListFilter{Tag: f.Tag, Limit: recentLimit})
 			if err != nil {
 				return nil, err
 			}

@@ -28,7 +28,14 @@ func (s *Store) CreateGlyph(g *types.Glyph) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO glyphs (id, body, type, meta, created_at, updated_at) VALUES (?,?,?,?,?,?)`,
+	if err := insertGlyph(tx, g); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertGlyph(tx *sql.Tx, g *types.Glyph) error {
+	_, err := tx.Exec(`INSERT INTO glyphs (id, body, type, meta, created_at, updated_at) VALUES (?,?,?,?,?,?)`,
 		g.ID, g.Body, nullable(g.Type), nullable(g.Meta), g.CreatedAt.Unix(), g.UpdatedAt.Unix())
 	if err != nil {
 		return err
@@ -44,7 +51,7 @@ func (s *Store) CreateGlyph(g *types.Glyph) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // AmendGlyph applies in-place changes to a glyph and bumps updated_at.
@@ -143,15 +150,94 @@ func (s *Store) DeleteGlyph(gid string) error {
 
 // CreateEdge links src → dst with rel. Duplicate (src,dst,rel) is a no-op.
 func (s *Store) CreateEdge(src, dst, rel string) (*types.Edge, error) {
-	for _, gid := range []string{src, dst} {
+	es, err := s.CreateEdges(src, []string{dst}, rel)
+	if err != nil {
+		return nil, err
+	}
+	return es[0], nil
+}
+
+// CreateEdges links src → each dst with the same rel, atomically.
+// Duplicate (src,dst,rel) rows are ignored. dsts are de-duplicated in order.
+func (s *Store) CreateEdges(src string, dsts []string, rel string) ([]*types.Edge, error) {
+	if src == "" {
+		return nil, fmt.Errorf("empty source id")
+	}
+	seen := map[string]bool{}
+	uniq := make([]string, 0, len(dsts))
+	for _, d := range dsts {
+		if d == "" {
+			return nil, fmt.Errorf("empty destination id")
+		}
+		if !seen[d] {
+			seen[d] = true
+			uniq = append(uniq, d)
+		}
+	}
+	if len(uniq) == 0 {
+		return nil, fmt.Errorf("no destinations")
+	}
+	for _, gid := range append([]string{src}, uniq...) {
 		if !s.Exists(gid) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, gid)
 		}
 	}
-	e := &types.Edge{ID: id.Edge(), Src: src, Dst: dst, Rel: rel, CreatedAt: time.Now()}
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO edges (id, src, dst, rel, created_at) VALUES (?,?,?,?,?)`,
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	out := make([]*types.Edge, 0, len(uniq))
+	for _, dst := range uniq {
+		e := &types.Edge{ID: id.Edge(), Src: src, Dst: dst, Rel: rel, CreatedAt: now}
+		if err := insertEdge(tx, e); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func insertEdge(tx *sql.Tx, e *types.Edge) error {
+	_, err := tx.Exec(`INSERT OR IGNORE INTO edges (id, src, dst, rel, created_at) VALUES (?,?,?,?,?)`,
 		e.ID, e.Src, e.Dst, e.Rel, e.CreatedAt.Unix())
-	return e, err
+	return err
+}
+
+// ApplyGraph inserts glyphs then edges in one transaction. Glyph ids must
+// already be set; edge ends must be in the batch or already in the store.
+func (s *Store) ApplyGraph(gs []*types.Glyph, edges []*types.Edge) error {
+	known := map[string]bool{}
+	for _, g := range gs {
+		known[g.ID] = true
+	}
+	for _, e := range edges {
+		for _, gid := range []string{e.Src, e.Dst} {
+			if !known[gid] && !s.Exists(gid) {
+				return fmt.Errorf("%w: %s", ErrNotFound, gid)
+			}
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, g := range gs {
+		if err := insertGlyph(tx, g); err != nil {
+			return err
+		}
+	}
+	for _, e := range edges {
+		if err := insertEdge(tx, e); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ListFilter narrows ListGlyphs.
@@ -163,9 +249,8 @@ type ListFilter struct {
 	Limit int
 }
 
-// ListGlyphs returns recent glyphs (newest first) matching the filter,
-// with tags and refs attached.
-func (s *Store) ListGlyphs(f ListFilter) ([]*types.Glyph, int, error) {
+// listWhere builds a glyphs-aliased-as-g predicate from f.
+func listWhere(f ListFilter) (string, []any) {
 	where, args := []string{"1=1"}, []any{}
 	if f.Type != "" {
 		where, args = append(where, "g.type = ?"), append(args, f.Type)
@@ -180,7 +265,13 @@ func (s *Store) ListGlyphs(f ListFilter) ([]*types.Glyph, int, error) {
 	if !f.Until.IsZero() {
 		where, args = append(where, "g.created_at < ?"), append(args, f.Until.Unix())
 	}
-	cond := strings.Join(where, " AND ")
+	return strings.Join(where, " AND "), args
+}
+
+// ListGlyphs returns recent glyphs (newest first) matching the filter,
+// with tags and refs attached.
+func (s *Store) ListGlyphs(f ListFilter) ([]*types.Glyph, int, error) {
+	cond, args := listWhere(f)
 
 	var total int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM glyphs g WHERE `+cond, args...).Scan(&total); err != nil {

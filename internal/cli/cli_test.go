@@ -5,8 +5,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/54rt1n/glyph/internal/store"
 	"github.com/54rt1n/glyph/internal/types"
 )
+
+func sampleGlyph() *types.Glyph {
+	return &types.Glyph{
+		ID:   "g-a1b2",
+		Body: "Pins by default; deepen with show.\nSecond line stays out of the ack.",
+		Type: "decision",
+		Tags: []string{"retrieval", "v0"},
+	}
+}
 
 func TestParseRef(t *testing.T) {
 	tests := []struct {
@@ -96,6 +106,24 @@ func TestTimeFiltersResolve(t *testing.T) {
 	tf = timeFilters{since: "yesterday"}
 	if _, _, err = tf.resolve(); err == nil || !strings.Contains(err.Error(), "invalid date") {
 		t.Fatalf("bad date err = %v", err)
+	}
+}
+
+func TestRenderContextStanding(t *testing.T) {
+	g := sampleGlyph()
+	out := renderContext(&store.Stats{
+		Glyphs: 2, Edges: 1, Tag: "agent-runtime",
+		ByType:  []store.TypeCount{{Type: "decision", Count: 1}, {Type: "note", Count: 1}},
+		TopTags: []store.TagCount{{Tag: "v0", Count: 1}},
+		Recent:  []*types.Glyph{g},
+	}, 300)
+	for _, want := range []string{"tag agent-runtime", "standing:", "g-a1b2", "co-tags:", "v0(1)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("standing context missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\nrecent:") {
+		t.Fatalf("tagged context still says recent:\n%s", out)
 	}
 }
 

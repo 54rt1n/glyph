@@ -9,23 +9,28 @@ import (
 var linkRel string
 
 var linkCmd = &cobra.Command{
-	Use:   "link <src-id> <dst-id>",
-	Short: "Connect two glyphs with a typed edge",
-	Args:  cobra.ExactArgs(2),
+	Use:   "link <src-id> <dst-id> [dst-id...]",
+	Short: "Connect glyphs with a typed edge (one src, one or more dests)",
+	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		_, st, err := openStore()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		e, err := st.CreateEdge(args[0], args[1], linkRel)
+		es, err := st.CreateEdges(args[0], args[1:], linkRel)
 		if err != nil {
 			return err
 		}
 		if jsonOut() {
-			return emitJSON(e)
+			if len(es) == 1 {
+				return emitJSON(es[0])
+			}
+			return emitJSON(map[string]any{"edges": es})
 		}
-		fmt.Printf("%s -%s-> %s\n", e.Src, e.Rel, e.Dst)
+		for _, e := range es {
+			fmt.Printf("%s -%s-> %s\n", e.Src, e.Rel, e.Dst)
+		}
 		return nil
 	},
 }

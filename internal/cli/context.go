@@ -12,29 +12,44 @@ import (
 	"github.com/54rt1n/glyph/internal/types"
 )
 
-var contextBudget int
+var (
+	contextBudget int
+	contextTag    string
+)
 
 var contextCmd = &cobra.Command{
 	Use:   "context",
 	Short: "Store summary: counts, types, tags, activity (bd prime-style)",
-	Args:  cobra.NoArgs,
+	Long: `Orient on the store: counts, types, top tags, recent activity.
+
+--tag scopes every count and surfaces standing pins for that tag
+(decisions first). Use it when you already know the topic and want
+the standing decision without a noisy ask.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		_, st, err := openStore()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		stats, err := st.GetStats(5)
+		limit := 5
+		if contextTag != "" {
+			limit = 12
+		}
+		stats, err := st.GetStats(limit, store.ListFilter{Tag: contextTag})
 		if err != nil {
 			return err
 		}
 		if jsonOut() {
 			recent := stats.Recent
 			stats.Recent = nil
-			return emitJSON(map[string]any{
-				"stats":  stats,
-				"recent": jsonGlyphs(types.FacetPin, recent),
-			})
+			out := map[string]any{"stats": stats}
+			if stats.Tag != "" {
+				out["standing"] = jsonGlyphs(types.FacetPin, recent)
+			} else {
+				out["recent"] = jsonGlyphs(types.FacetPin, recent)
+			}
+			return emitJSON(out)
 		}
 		fmt.Println(renderContext(stats, contextBudget))
 		return nil
@@ -43,11 +58,16 @@ var contextCmd = &cobra.Command{
 
 func init() {
 	contextCmd.Flags().IntVar(&contextBudget, "budget", 300, "word budget for the summary (0 = unlimited)")
+	contextCmd.Flags().StringVar(&contextTag, "tag", "", "standing view for one tag")
 }
 
 func renderContext(s *store.Stats, budget int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "glyph store: %d glyphs · %d edges · %d refs", s.Glyphs, s.Edges, s.Refs)
+	if s.Tag != "" {
+		fmt.Fprintf(&b, "glyph store [tag %s]: %d glyphs · %d edges · %d refs", s.Tag, s.Glyphs, s.Edges, s.Refs)
+	} else {
+		fmt.Fprintf(&b, "glyph store: %d glyphs · %d edges · %d refs", s.Glyphs, s.Edges, s.Refs)
+	}
 	if s.Vecs > 0 {
 		fmt.Fprintf(&b, " · %d vectors", s.Vecs)
 	}
@@ -67,12 +87,20 @@ func renderContext(s *store.Stats, budget int) string {
 		for _, tc := range s.TopTags {
 			parts = append(parts, fmt.Sprintf("%s(%d)", tc.Tag, tc.Count))
 		}
-		b.WriteString("top tags: " + strings.Join(parts, " · ") + "\n")
+		label := "top tags: "
+		if s.Tag != "" {
+			label = "co-tags:  "
+		}
+		b.WriteString(label + strings.Join(parts, " · ") + "\n")
 	}
 	fmt.Fprintf(&b, "activity: today %d · this week %d\n", s.Today, s.ThisWeek)
 	b.WriteString("facets:   pin → card → body → neighborhood   (defaults: bulk=pin, show=body)\n")
 	if len(s.Recent) > 0 {
-		b.WriteString("recent:\n")
+		if s.Tag != "" {
+			b.WriteString("standing:\n")
+		} else {
+			b.WriteString("recent:\n")
+		}
 		lines := make([]string, 0, len(s.Recent))
 		for _, g := range s.Recent {
 			lines = append(lines, "  "+facet.Pin(g))

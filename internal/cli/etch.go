@@ -14,17 +14,28 @@ import (
 )
 
 var (
-	etchType string
-	etchTags []string
-	etchRefs []string
+	etchType  string
+	etchTags  []string
+	etchRefs  []string
+	etchGraph string
 )
 
 var etchCmd = &cobra.Command{
 	Use:   "etch [body]",
 	Short: "Store text as a glyph (timestamped automatically)",
-	Long:  "Body comes from the argument, or stdin when piped. Tags classify; refs cite.",
-	Args:  cobra.MaximumNArgs(1),
+	Long: `Body comes from the argument, or stdin when piped. Tags classify; refs cite.
+
+--graph FILE applies a small JSON graph (etch + link) in one transaction.
+Ids in the file are aliases remapped to real g-xxxx ids; links may also
+name existing glyphs. Use --graph - to read the graph from stdin.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if etchGraph != "" {
+			if len(args) > 0 {
+				return fmt.Errorf("etch --graph does not take a body argument")
+			}
+			return runEtchGraph(etchGraph)
+		}
 		body, err := bodyFromArgsOrStdin(args)
 		if err != nil {
 			return err
@@ -57,7 +68,7 @@ var etchCmd = &cobra.Command{
 		}
 		embedGlyph(st, loadEmbedder(proj), g.ID, g.Body)
 		if jsonOut() {
-			return emitJSON(map[string]string{"id": g.ID})
+			return emitJSON(writeAck(g))
 		}
 		fmt.Println(g.ID)
 		return nil
@@ -68,6 +79,7 @@ func init() {
 	etchCmd.Flags().StringVarP(&etchType, "type", "t", "", "glyph kind: note, decision, fact, …")
 	etchCmd.Flags().StringArrayVar(&etchTags, "tag", nil, "freeform label (repeatable)")
 	etchCmd.Flags().StringArrayVar(&etchRefs, "ref", nil, "kind:target reference (repeatable)")
+	etchCmd.Flags().StringVar(&etchGraph, "graph", "", "JSON file of etch+link (\"-\" = stdin)")
 }
 
 func bodyFromArgsOrStdin(args []string) (string, error) {

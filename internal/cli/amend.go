@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	amendType string
-	amendTags []string
-	amendRefs []string
+	amendType   string
+	amendTags   []string
+	amendRefs   []string
+	amendAppend bool
 )
 
 var amendCmd = &cobra.Command{
@@ -20,7 +21,9 @@ var amendCmd = &cobra.Command{
 	Short: "Revise a glyph in place — no near-duplicate etches",
 	Long: `Update body, type, tags, or refs of an existing glyph and bump updated_at.
 --tag and --ref take +value to add and -value to remove:
-  glyph amend g-a1b2 --tag +packing --tag -v0 --ref +url:https://… --ref -bead:bd-x7k2`,
+  glyph amend g-a1b2 --tag +packing --tag -v0 --ref +url:https://… --ref -bead:bd-x7k2
+--append keeps the existing body and adds the new text after a blank line:
+  glyph amend g-a1b2 --append "COMPLETE: shipped the split"`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gid := args[0]
@@ -30,6 +33,9 @@ var amendCmd = &cobra.Command{
 				return fmt.Errorf("empty body")
 			}
 			body = &args[1]
+		}
+		if amendAppend && body == nil {
+			return fmt.Errorf("--append requires a body")
 		}
 		var typ *string
 		if cmd.Flags().Changed("type") {
@@ -60,6 +66,14 @@ var amendCmd = &cobra.Command{
 			return err
 		}
 		defer st.Close()
+		if amendAppend && body != nil {
+			existing, err := st.GetGlyph(gid)
+			if err != nil {
+				return err
+			}
+			combined := appendBody(existing.Body, *body)
+			body = &combined
+		}
 		g, bodyChanged, err := st.AmendGlyph(gid, body, typ, addTags, rmTags, addRefs, rmRefs)
 		if err != nil {
 			return err
@@ -68,7 +82,12 @@ var amendCmd = &cobra.Command{
 			embedGlyph(st, loadEmbedder(proj), g.ID, g.Body)
 		}
 		if jsonOut() {
-			return emitJSON(map[string]any{"id": g.ID, "body_changed": bodyChanged})
+			ack := writeAck(g)
+			ack["body_changed"] = bodyChanged
+			if amendAppend {
+				ack["appended"] = true
+			}
+			return emitJSON(ack)
 		}
 		fmt.Printf("amended %s\n", g.ID)
 		return nil
@@ -79,6 +98,12 @@ func init() {
 	amendCmd.Flags().StringVarP(&amendType, "type", "t", "", "set glyph kind")
 	amendCmd.Flags().StringArrayVar(&amendTags, "tag", nil, "+tag to add, -tag to remove (repeatable)")
 	amendCmd.Flags().StringArrayVar(&amendRefs, "ref", nil, "+kind:target to add, -kind:target to remove (repeatable)")
+	amendCmd.Flags().BoolVar(&amendAppend, "append", false, "append body instead of replacing")
+}
+
+// appendBody keeps the existing note and adds extra after a blank line.
+func appendBody(existing, extra string) string {
+	return strings.TrimRight(existing, "\n") + "\n\n" + strings.TrimSpace(extra)
 }
 
 // splitSigned partitions +value / -value entries.

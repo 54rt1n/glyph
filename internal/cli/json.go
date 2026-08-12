@@ -53,3 +53,16 @@ func addCommon(m map[string]any, g *types.Glyph, full bool) {
 		m["tags"] = g.Tags
 	}
 }
+
+// writeAck is the etch/amend confirmation: id plus type, tags, first line
+// so the caller can see they wrote what they think they wrote.
+func writeAck(g *types.Glyph) map[string]any {
+	m := map[string]any{"id": g.ID, "line": facet.FirstLine(g.Body, 72)}
+	if g.Type != "" {
+		m["type"] = g.Type
+	}
+	if len(g.Tags) > 0 {
+		m["tags"] = g.Tags
+	}
+	return m
+}

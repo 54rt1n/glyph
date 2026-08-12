@@ -21,7 +21,9 @@ Memory is **progressive**: bulk commands return one-line **pins**; deepen on pur
 ## Session loop
 
     glyph context                 # orient: counts, types, tags, activity
+    glyph context --tag retrieval # standing decisions for one tag (use this before a noisy ask)
     glyph ask "<question>"        # candidates as pins (hybrid BM25 + vectors)
+    glyph ask "<question>" --tag retrieval   # same filters as list; pass --tag when you know the topic
     glyph show g-a1b2             # spend budget on ONE node (full body + refs)
     glyph show g-a1b2 --facet neighborhood   # one-hop expand
     glyph related g-a1b2          # neighbors as pins
@@ -30,12 +32,28 @@ Memory is **progressive**: bulk commands return one-line **pins**; deepen on pur
 
     glyph etch --type note "Tried X; Y failed because Z"
     glyph etch --type decision --tag retrieval --ref url:https://… "We chose A over B"
+    glyph etch --json --type decision --tag retrieval "…"   # ack is {id, type, tags, line}
     glyph link g-a1b2 g-c3d4 --as supports
+    glyph link g-dec g-a g-b g-c --as supports   # one src, many dests
 
 **Knowledge changed? Amend, don't re-etch a near-duplicate:**
 
     glyph amend g-a1b2 "Updated conclusion"
+    glyph amend g-a1b2 --append "COMPLETE: shipped"   # keep the start note; history in one glyph
     glyph amend g-a1b2 --tag +packing --tag -draft --ref +path:internal/store/store.go
+
+**Mid-refactor batch (etch + link in one file):**
+
+    glyph etch --graph graph.json
+    # graph.json:
+    # {
+    #   "etch": [
+    #     {"id": "dec", "type": "decision", "tags": ["runtime"], "body": "Split into 3 PRs"},
+    #     {"id": "n1", "type": "note", "body": "PR1: extract estimator"}
+    #   ],
+    #   "link": [{"src": "dec", "dst": "n1", "as": "supports"}]
+    # }
+    # "id" values are aliases remapped to real g-xxxx; links may also name existing glyphs.
 
 ## Reading with filters (time is a query, never a write flag)
 
@@ -71,7 +89,8 @@ No model, no problem: results are keyword + tag matches only.
 - Etch freely and briefly; one idea per glyph.
 - Deepen intentionally: one show at a time, not full bodies in bulk.
 - Amend stale knowledge; forget wrong knowledge (glyph forget g-x).
-- Add --json for machine-readable output (or GLYPH_FORMAT=json).
+- Know the tag? glyph context --tag X before a wide ask.
+- Add --json for machine-readable output (or GLYPH_FORMAT=json). etch --json returns id, type, tags, first line.
 `
 
 var skillCmd = &cobra.Command{

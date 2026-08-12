@@ -294,7 +294,7 @@ func TestStats(t *testing.T) {
 	if _, err := s.CreateEdge("g-aaaa", "g-bbbb", "supports"); err != nil {
 		t.Fatal(err)
 	}
-	st, err := s.GetStats(5)
+	st, err := s.GetStats(5, ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,4 +310,106 @@ func TestStats(t *testing.T) {
 	if len(st.TopTags) == 0 || st.TopTags[0].Tag != "x" {
 		t.Fatalf("tags = %v", st.TopTags)
 	}
+}
+
+func TestCreateEdges(t *testing.T) {
+	s := testStore(t)
+	mkGlyph(t, s, "g-aaaa", "src", "decision", nil, nil)
+	mkGlyph(t, s, "g-bbbb", "b", "note", nil, nil)
+	mkGlyph(t, s, "g-cccc", "c", "note", nil, nil)
+	es, err := s.CreateEdges("g-aaaa", []string{"g-bbbb", "g-cccc", "g-bbbb"}, "supports")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(es) != 2 {
+		t.Fatalf("edges = %d, want 2 (dedup)", len(es))
+	}
+	gs, err := s.Related("g-aaaa", 10)
+	if err != nil || len(gs) != 2 {
+		t.Fatalf("related = %v err=%v", gs, err)
+	}
+	if _, err := s.CreateEdges("g-aaaa", []string{"g-nope"}, "supports"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing dest err = %v", err)
+	}
+	// failed batch must not leave a partial write: g-nope missing, g-bbbb already linked
+	es, err = s.CreateEdges("g-aaaa", []string{"g-cccc"}, "related")
+	if err != nil || len(es) != 1 {
+		t.Fatalf("second rel: %v %v", es, err)
+	}
+}
+
+func TestApplyGraph(t *testing.T) {
+	s := testStore(t)
+	now := time.Now()
+	gs := []*types.Glyph{
+		{ID: "g-aaaa", Body: "decision", Type: "decision", Tags: []string{"runtime"}, CreatedAt: now, UpdatedAt: now},
+		{ID: "g-bbbb", Body: "note", Type: "note", CreatedAt: now, UpdatedAt: now},
+	}
+	edges := []*types.Edge{
+		{ID: "e-1", Src: "g-aaaa", Dst: "g-bbbb", Rel: "supports", CreatedAt: now},
+	}
+	if err := s.ApplyGraph(gs, edges); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetGlyph("g-aaaa")
+	if err != nil || got.Type != "decision" || len(got.Tags) != 1 {
+		t.Fatalf("got %+v err=%v", got, err)
+	}
+	rel, err := s.Related("g-aaaa", 10)
+	if err != nil || len(rel) != 1 || rel[0].ID != "g-bbbb" {
+		t.Fatalf("related = %v err=%v", rel, err)
+	}
+	// missing dest fails before insert — no partial write
+	s2 := testStore(t)
+	if err := s2.ApplyGraph(
+		[]*types.Glyph{{ID: "g-cccc", Body: "orphan", CreatedAt: now, UpdatedAt: now}},
+		[]*types.Edge{{ID: "e-2", Src: "g-cccc", Dst: "g-missing", Rel: "related", CreatedAt: now}},
+	); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing dest err = %v", err)
+	}
+	if s2.Exists("g-cccc") {
+		t.Fatal("partial graph survived failed apply")
+	}
+}
+
+func TestStatsTagged(t *testing.T) {
+	s := testStore(t)
+	mkGlyph(t, s, "g-aaaa", "standing runtime decision", "decision", []string{"agent-runtime", "v0"}, nil)
+	mkGlyph(t, s, "g-bbbb", "runtime note", "note", []string{"agent-runtime"}, nil)
+	mkGlyph(t, s, "g-cccc", "unrelated decision", "decision", []string{"other"}, nil)
+	if _, err := s.CreateEdge("g-aaaa", "g-bbbb", "supports"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.GetStats(5, ListFilter{Tag: "agent-runtime"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Glyphs != 2 || st.Tag != "agent-runtime" {
+		t.Fatalf("scoped glyphs = %+v", st)
+	}
+	if st.Edges != 1 {
+		t.Fatalf("scoped edges = %d", st.Edges)
+	}
+	if len(st.Recent) == 0 || st.Recent[0].ID != "g-aaaa" {
+		t.Fatalf("standing pins = %v", idsOf(st.Recent))
+	}
+	for _, g := range st.Recent {
+		if g.ID == "g-cccc" {
+			t.Fatal("unrelated glyph leaked into tagged standing view")
+		}
+	}
+	// filter tag itself is omitted from co-tags
+	for _, tc := range st.TopTags {
+		if tc.Tag == "agent-runtime" {
+			t.Fatalf("filter tag listed as co-tag: %v", st.TopTags)
+		}
+	}
+}
+
+func idsOf(gs []*types.Glyph) []string {
+	out := make([]string, len(gs))
+	for i, g := range gs {
+		out[i] = g.ID
+	}
+	return out
 }
