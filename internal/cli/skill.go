@@ -20,25 +20,30 @@ Memory is **progressive**: bulk commands return one-line **pins**; deepen on pur
 
 ## Session loop
 
-    glyph context                 # orient: counts, types, tags, activity
+    glyph context                 # orient: store size, all starred focus, five recent glyphs
+    glyph context --verbose       # add type/tag/ref/vector/activity inventory
     glyph context --tag retrieval # standing decisions for one tag (use this before a noisy ask)
     glyph ask "<question>"        # candidates as pins (hybrid BM25 + vectors)
     glyph ask "<question>" --tag retrieval   # same filters as list; pass --tag when you know the topic
     glyph show g-a1b2             # spend budget on ONE node (full body + refs)
     glyph show g-a1b2 --facet neighborhood   # one-hop expand
-    glyph related g-a1b2          # neighbors as pins
+    glyph related g-a1b2          # depth-1 graph around the root (both directions)
+    glyph related g-a1b2 --depth 3 --direction out  # follow what flowed from it
 
 ## Writing (same energy as daily notes — timestamps are automatic)
 
-    glyph etch --type note "Tried X; Y failed because Z"
-    glyph etch --type decision --tag retrieval --ref url:https://… "We chose A over B"
-    glyph etch --json --type decision --tag retrieval "…"   # ack is {id, type, tags, line}
+    glyph etch --type note --summary "Experiment: Y failed" "Tried X; Y failed because Z"
+    glyph etch --star --type decision --tag retrieval --summary "Retrieval: choose A" --ref url:https://… "We chose A over B"
+    glyph etch --json --summary "Scanning label" "…"   # ack includes id, summary, and resolved line
     glyph link g-a1b2 g-c3d4 --as supports
     glyph link g-dec g-a g-b g-c --as supports   # one src, many dests
 
 **Knowledge changed? Amend, don't re-etch a near-duplicate:**
 
     glyph amend g-a1b2 "Updated conclusion"
+    glyph amend g-a1b2 --summary "Updated scanning label"
+    glyph amend g-a1b2 --star      # idempotently add to active focus
+    glyph amend g-a1b2 --unstar    # idempotently remove from active focus
     glyph amend g-a1b2 --append "COMPLETE: shipped"   # keep the start note; history in one glyph
     glyph amend g-a1b2 --tag +packing --tag -draft --ref +path:internal/store/store.go
 
@@ -48,7 +53,7 @@ Memory is **progressive**: bulk commands return one-line **pins**; deepen on pur
     # graph.json:
     # {
     #   "etch": [
-    #     {"id": "dec", "type": "decision", "tags": ["runtime"], "body": "Split into 3 PRs"},
+    #     {"id": "dec", "summary": "Runtime: three-PR split", "starred": true, "type": "decision", "tags": ["runtime"], "body": "Split into 3 PRs"},
     #     {"id": "n1", "type": "note", "body": "PR1: extract estimator"}
     #   ],
     #   "link": [{"src": "dec", "dst": "n1", "as": "supports"}]
@@ -58,6 +63,7 @@ Memory is **progressive**: bulk commands return one-line **pins**; deepen on pur
 ## Reading with filters (time is a query, never a write flag)
 
     glyph list --type note --today
+    glyph list --star
     glyph list --since 2026-07-01 --tag retrieval
     glyph ask "what did we decide about retrieval?" --limit 8
     glyph ask "open questions" --type decision --today   # ask takes the same filters as list
@@ -75,8 +81,9 @@ Never put a URL in a tag. Never ref another glyph — link it.
     id → pin → card → body → neighborhood
 
 Defaults: list/ask/related return **pin**; show returns **body**. Use --facet to override.
+Pins use an explicit one-line summary when present and otherwise fall back to the first body line.
 When output says "showing N of M", the window is full — memory is not empty.
-Budgets are counted in **words** (not tokens; ~4 words ≈ 3 tokens). context defaults to --budget 300.
+Budgets are counted in **words** (not tokens; ~4 words ≈ 3 tokens). Context is unlimited by default so every starred glyph remains visible; set --budget explicitly to cap it.
 
 ## Retrieval quality
 
@@ -87,6 +94,8 @@ No model, no problem: results are keyword + tag matches only.
 ## Rules of thumb
 
 - Etch freely and briefly; one idea per glyph.
+- Give durable or long-bodied glyphs a scanning summary; star only the current focus set.
+- Traverse from a root with related --depth N; use --direction out for consequences and both for full context.
 - Deepen intentionally: one show at a time, not full bodies in bulk.
 - Amend stale knowledge; forget wrong knowledge (glyph forget g-x).
 - Know the tag? glyph context --tag X before a wide ask.

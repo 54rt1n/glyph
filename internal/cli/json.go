@@ -20,7 +20,7 @@ func jsonGlyph(f types.Facet, g *types.Glyph) any {
 	case types.FacetID:
 		return g.ID
 	case types.FacetPin:
-		m := map[string]any{"id": g.ID, "line": facet.FirstLine(g.Body, 72)}
+		m := map[string]any{"id": g.ID, "line": facet.DisplayLine(g, 72)}
 		addCommon(m, g, false)
 		return m
 	case types.FacetCard:
@@ -33,6 +33,12 @@ func jsonGlyph(f types.Facet, g *types.Glyph) any {
 }
 
 func addCommon(m map[string]any, g *types.Glyph, full bool) {
+	if g.Summary != "" {
+		m["summary"] = g.Summary
+	}
+	if g.Starred {
+		m["starred"] = true
+	}
 	if g.Type != "" {
 		m["type"] = g.Type
 	}
@@ -57,7 +63,13 @@ func addCommon(m map[string]any, g *types.Glyph, full bool) {
 // writeAck is the etch/amend confirmation: id plus type, tags, first line
 // so the caller can see they wrote what they think they wrote.
 func writeAck(g *types.Glyph) map[string]any {
-	m := map[string]any{"id": g.ID, "line": facet.FirstLine(g.Body, 72)}
+	m := map[string]any{"id": g.ID, "line": facet.DisplayLine(g, 72)}
+	if g.Summary != "" {
+		m["summary"] = g.Summary
+	}
+	if g.Starred {
+		m["starred"] = true
+	}
 	if g.Type != "" {
 		m["type"] = g.Type
 	}

@@ -29,9 +29,9 @@ var showCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		var neighbors []*types.Glyph
+		var traversal *types.Traversal
 		if f == types.FacetNeighborhood {
-			neighbors, err = st.Related(g.ID, 10)
+			traversal, err = st.TraverseRelated(g.ID, 1, types.DirectionBoth, 11)
 			if err != nil {
 				return err
 			}
@@ -39,11 +39,17 @@ var showCmd = &cobra.Command{
 		if jsonOut() {
 			out := map[string]any{"facet": f, "glyph": jsonGlyph(f, g)}
 			if f == types.FacetNeighborhood {
-				out["neighbors"] = jsonGlyphs(types.FacetPin, neighbors)
+				related := jsonTraversal(types.FacetPin, traversal)
+				out["neighbors"] = related["glyphs"]
+				out["edges"] = related["edges"]
 			}
 			return emitJSON(out)
 		}
-		fmt.Println(facet.Render(f, g, neighbors))
+		if f == types.FacetNeighborhood {
+			fmt.Println(facet.NeighborhoodTraversal(traversal))
+		} else {
+			fmt.Println(facet.Render(f, g, nil))
+		}
 		return nil
 	},
 }

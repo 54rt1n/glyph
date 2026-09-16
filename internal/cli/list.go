@@ -15,6 +15,7 @@ var (
 	listTag   string
 	listLimit int
 	listFacet string
+	listStar  bool
 	listTime  timeFilters
 )
 
@@ -37,7 +38,7 @@ var listCmd = &cobra.Command{
 		}
 		defer st.Close()
 		gs, total, err := st.ListGlyphs(store.ListFilter{
-			Type: listType, Tag: listTag, Since: since, Until: until, Limit: listLimit,
+			Type: listType, Tag: listTag, Starred: listStar, Since: since, Until: until, Limit: listLimit,
 		})
 		if err != nil {
 			return err
@@ -60,6 +61,7 @@ var listCmd = &cobra.Command{
 func init() {
 	listCmd.Flags().StringVarP(&listType, "type", "t", "", "filter by glyph kind")
 	listCmd.Flags().StringVar(&listTag, "tag", "", "filter by tag")
+	listCmd.Flags().BoolVar(&listStar, "star", false, "only glyphs in the active focus set")
 	listCmd.Flags().IntVar(&listLimit, "limit", 20, "max results")
 	listCmd.Flags().StringVar(&listFacet, "facet", "", "disclosure level (default pin)")
 	listTime.register(listCmd)

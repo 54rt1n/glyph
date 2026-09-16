@@ -14,16 +14,19 @@ import (
 )
 
 var (
-	etchType  string
-	etchTags  []string
-	etchRefs  []string
-	etchGraph string
+	etchType    string
+	etchTags    []string
+	etchRefs    []string
+	etchGraph   string
+	etchSummary string
+	etchStar    bool
 )
 
 var etchCmd = &cobra.Command{
 	Use:   "etch [body]",
 	Short: "Store text as a glyph (timestamped automatically)",
-	Long: `Body comes from the argument, or stdin when piped. Tags classify; refs cite.
+	Long: `Body comes from the argument, or stdin when piped. Summary is the optional
+one-line scanning label; star adds the glyph to active focus. Tags classify; refs cite.
 
 --graph FILE applies a small JSON graph (etch + link) in one transaction.
 Ids in the file are aliases remapped to real g-xxxx ids; links may also
@@ -37,6 +40,10 @@ name existing glyphs. Use --graph - to read the graph from stdin.`,
 			return runEtchGraph(etchGraph)
 		}
 		body, err := bodyFromArgsOrStdin(args)
+		if err != nil {
+			return err
+		}
+		summary, err := cleanSummary(etchSummary)
 		if err != nil {
 			return err
 		}
@@ -56,8 +63,10 @@ name existing glyphs. Use --graph - to read the graph from stdin.`,
 		now := time.Now()
 		g := &types.Glyph{
 			ID:        id.Generate(st.Exists),
+			Summary:   summary,
 			Body:      body,
 			Type:      etchType,
+			Starred:   etchStar,
 			Tags:      etchTags,
 			Refs:      refs,
 			CreatedAt: now,
@@ -66,7 +75,7 @@ name existing glyphs. Use --graph - to read the graph from stdin.`,
 		if err := st.CreateGlyph(g); err != nil {
 			return err
 		}
-		embedGlyph(st, loadEmbedder(proj), g.ID, g.Body)
+		embedGlyph(st, loadEmbedder(proj), g)
 		if jsonOut() {
 			return emitJSON(writeAck(g))
 		}
@@ -77,6 +86,8 @@ name existing glyphs. Use --graph - to read the graph from stdin.`,
 
 func init() {
 	etchCmd.Flags().StringVarP(&etchType, "type", "t", "", "glyph kind: note, decision, fact, …")
+	etchCmd.Flags().StringVarP(&etchSummary, "summary", "s", "", "one-line scanning summary")
+	etchCmd.Flags().BoolVar(&etchStar, "star", false, "add glyph to the active focus set")
 	etchCmd.Flags().StringArrayVar(&etchTags, "tag", nil, "freeform label (repeatable)")
 	etchCmd.Flags().StringArrayVar(&etchRefs, "ref", nil, "kind:target reference (repeatable)")
 	etchCmd.Flags().StringVar(&etchGraph, "graph", "", "JSON file of etch+link (\"-\" = stdin)")

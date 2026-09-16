@@ -39,7 +39,7 @@ func (s *Store) Search(query string, limit int, emb Embedder, filter ListFilter)
 	if err != nil {
 		return nil, err
 	}
-	// Tag hits rank after body hits: exact tag matches on query tokens keep
+	// Tag hits rank after text hits: exact tag matches on query tokens keep
 	// tag-only vocabulary (e.g. `--tag retrieval`) from being a lexical miss.
 	tagHits, err := s.searchTags(query, pool)
 	if err != nil {
@@ -94,7 +94,7 @@ func (s *Store) Search(query string, limit int, emb Embedder, filter ListFilter)
 
 // filterHits keeps only hits whose glyphs satisfy the type/tag/time filter.
 func (s *Store) filterHits(hits []Hit, f ListFilter) ([]Hit, error) {
-	if f.Type == "" && f.Tag == "" && f.Since.IsZero() && f.Until.IsZero() || len(hits) == 0 {
+	if f.Type == "" && f.Tag == "" && !f.Starred && f.Since.IsZero() && f.Until.IsZero() || len(hits) == 0 {
 		return hits, nil
 	}
 	where, args := []string{}, []any{}
@@ -104,6 +104,9 @@ func (s *Store) filterHits(hits []Hit, f ListFilter) ([]Hit, error) {
 	if f.Tag != "" {
 		where = append(where, "id IN (SELECT glyph_id FROM glyph_tags WHERE tag = ?)")
 		args = append(args, f.Tag)
+	}
+	if f.Starred {
+		where = append(where, "starred = 1")
 	}
 	if !f.Since.IsZero() {
 		where, args = append(where, "created_at >= ?"), append(args, f.Since.Unix())

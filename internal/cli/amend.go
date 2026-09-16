@@ -6,20 +6,24 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/54rt1n/glyph/internal/store"
 	"github.com/54rt1n/glyph/internal/types"
 )
 
 var (
-	amendType   string
-	amendTags   []string
-	amendRefs   []string
-	amendAppend bool
+	amendType    string
+	amendTags    []string
+	amendRefs    []string
+	amendAppend  bool
+	amendSummary string
+	amendStar    bool
+	amendUnstar  bool
 )
 
 var amendCmd = &cobra.Command{
 	Use:   "amend <id> [new body]",
 	Short: "Revise a glyph in place — no near-duplicate etches",
-	Long: `Update body, type, tags, or refs of an existing glyph and bump updated_at.
+	Long: `Update body, summary, focus, type, tags, or refs of an existing glyph.
 --tag and --ref take +value to add and -value to remove:
   glyph amend g-a1b2 --tag +packing --tag -v0 --ref +url:https://… --ref -bead:bd-x7k2
 --append keeps the existing body and adds the new text after a blank line:
@@ -36,6 +40,22 @@ var amendCmd = &cobra.Command{
 		}
 		if amendAppend && body == nil {
 			return fmt.Errorf("--append requires a body")
+		}
+		var summary *string
+		if cmd.Flags().Changed("summary") {
+			cleaned, err := cleanSummary(amendSummary)
+			if err != nil {
+				return err
+			}
+			summary = &cleaned
+		}
+		var starred *bool
+		if amendStar {
+			v := true
+			starred = &v
+		} else if amendUnstar {
+			v := false
+			starred = &v
 		}
 		var typ *string
 		if cmd.Flags().Changed("type") {
@@ -57,8 +77,8 @@ var amendCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if body == nil && typ == nil && len(addTags)+len(rmTags)+len(addRefs)+len(rmRefs) == 0 {
-			return fmt.Errorf("nothing to amend: pass a new body, --type, --tag +/-, or --ref +/-")
+		if body == nil && summary == nil && typ == nil && starred == nil && len(addTags)+len(rmTags)+len(addRefs)+len(rmRefs) == 0 {
+			return fmt.Errorf("nothing to amend: pass a new body, --summary, --star/--unstar, --type, --tag +/-, or --ref +/-")
 		}
 
 		proj, st, err := openStore()
@@ -66,24 +86,33 @@ var amendCmd = &cobra.Command{
 			return err
 		}
 		defer st.Close()
-		if amendAppend && body != nil {
-			existing, err := st.GetGlyph(gid)
+		var existing *types.Glyph
+		if body != nil || summary != nil {
+			existing, err = st.GetGlyph(gid)
 			if err != nil {
 				return err
 			}
+		}
+		if amendAppend && body != nil {
 			combined := appendBody(existing.Body, *body)
 			body = &combined
 		}
-		g, bodyChanged, err := st.AmendGlyph(gid, body, typ, addTags, rmTags, addRefs, rmRefs)
+		bodyChanged := body != nil && existing != nil && existing.Body != *body
+		summaryChanged := summary != nil && existing != nil && existing.Summary != *summary
+		g, searchableChanged, err := st.AmendGlyph(gid, store.GlyphPatch{
+			Body: body, Summary: summary, Type: typ, Starred: starred,
+			AddTags: addTags, RmTags: rmTags, AddRefs: addRefs, RmRefs: rmRefs,
+		})
 		if err != nil {
 			return err
 		}
-		if bodyChanged {
-			embedGlyph(st, loadEmbedder(proj), g.ID, g.Body)
+		if searchableChanged {
+			embedGlyph(st, loadEmbedder(proj), g)
 		}
 		if jsonOut() {
 			ack := writeAck(g)
 			ack["body_changed"] = bodyChanged
+			ack["summary_changed"] = summaryChanged
 			if amendAppend {
 				ack["appended"] = true
 			}
@@ -96,6 +125,10 @@ var amendCmd = &cobra.Command{
 
 func init() {
 	amendCmd.Flags().StringVarP(&amendType, "type", "t", "", "set glyph kind")
+	amendCmd.Flags().StringVarP(&amendSummary, "summary", "s", "", "set one-line summary (empty clears)")
+	amendCmd.Flags().BoolVar(&amendStar, "star", false, "add glyph to the active focus set")
+	amendCmd.Flags().BoolVar(&amendUnstar, "unstar", false, "remove glyph from the active focus set")
+	amendCmd.MarkFlagsMutuallyExclusive("star", "unstar")
 	amendCmd.Flags().StringArrayVar(&amendTags, "tag", nil, "+tag to add, -tag to remove (repeatable)")
 	amendCmd.Flags().StringArrayVar(&amendRefs, "ref", nil, "+kind:target to add, -kind:target to remove (repeatable)")
 	amendCmd.Flags().BoolVar(&amendAppend, "append", false, "append body instead of replacing")

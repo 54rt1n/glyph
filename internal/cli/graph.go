@@ -20,11 +20,13 @@ type graphFile struct {
 }
 
 type graphEtch struct {
-	ID   string    `json:"id"`
-	Type string    `json:"type"`
-	Tags []string  `json:"tags"`
-	Refs graphRefs `json:"refs"`
-	Body string    `json:"body"`
+	ID      string    `json:"id"`
+	Summary string    `json:"summary"`
+	Type    string    `json:"type"`
+	Starred bool      `json:"starred"`
+	Tags    []string  `json:"tags"`
+	Refs    graphRefs `json:"refs"`
+	Body    string    `json:"body"`
 }
 
 type graphLink struct {
@@ -98,6 +100,9 @@ func parseGraph(data []byte) (graphFile, error) {
 		if strings.TrimSpace(e.Body) == "" {
 			return g, fmt.Errorf("etch[%d]: empty body", i)
 		}
+		if _, err := cleanSummary(e.Summary); err != nil {
+			return g, fmt.Errorf("etch[%d]: %w", i, err)
+		}
 	}
 	for i, l := range g.Link {
 		if l.Src == "" || l.Dst == "" {
@@ -137,8 +142,10 @@ func resolveGraph(g graphFile, exists func(string) bool) (*resolvedGraph, error)
 		out.Aliases[real] = real
 		out.Glyphs = append(out.Glyphs, &types.Glyph{
 			ID:        real,
+			Summary:   strings.TrimSpace(e.Summary),
 			Body:      strings.TrimSpace(e.Body),
 			Type:      e.Type,
+			Starred:   e.Starred,
 			Tags:      e.Tags,
 			Refs:      []types.Ref(e.Refs),
 			CreatedAt: now,
@@ -199,7 +206,7 @@ func runEtchGraph(path string) error {
 	}
 	emb := loadEmbedder(proj)
 	for _, g := range resolved.Glyphs {
-		embedGlyph(st, emb, g.ID, g.Body)
+		embedGlyph(st, emb, g)
 	}
 	if jsonOut() {
 		return emitJSON(graphAck(resolved))

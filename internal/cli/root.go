@@ -19,7 +19,7 @@ import (
 var jsonFlag bool
 
 // Version is the glyph release version.
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 var rootCmd = &cobra.Command{
 	Use:           "glyph",
@@ -53,6 +53,9 @@ func openStore() (config.Project, *store.Store, error) {
 	if err != nil {
 		return config.Project{}, nil, err
 	}
+	// Keep runtime database artifacts, including the migration lock introduced
+	// after v1 stores were created, out of the containing repository.
+	ensureGitignore(proj)
 	st, err := store.Open(proj.DBPath())
 	if err != nil {
 		return config.Project{}, nil, err
@@ -74,14 +77,31 @@ func loadEmbedder(proj config.Project) embed.Embedder {
 	return emb
 }
 
-// embedGlyph stores the vector for a glyph if an embedder is available.
-func embedGlyph(st *store.Store, emb embed.Embedder, gid, body string) {
+// embedGlyph stores a summary+body vector when an embedder is available.
+func embedGlyph(st *store.Store, emb embed.Embedder, g *types.Glyph) {
 	if emb == nil {
 		return
 	}
-	if v, err := emb.Encode(body); err == nil && v != nil {
-		_ = st.SetVec(gid, emb.Model(), v)
+	if v, err := emb.Encode(searchableText(g)); err == nil && v != nil {
+		_ = st.SetVec(g.ID, emb.Model(), v)
 	}
+}
+
+func searchableText(g *types.Glyph) string {
+	if g.Summary == "" {
+		return g.Body
+	}
+	return g.Summary + "\n\n" + g.Body
+}
+
+// cleanSummary enforces the summary contract: zero or one non-empty line.
+// Empty is meaningful to amend because it clears an existing summary.
+func cleanSummary(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if strings.ContainsAny(s, "\r\n") {
+		return "", fmt.Errorf("summary must be one line")
+	}
+	return s, nil
 }
 
 func emitJSON(v any) error {

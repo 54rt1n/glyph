@@ -11,9 +11,21 @@ import (
 
 const pinLineWidth = 72
 
-// Pin renders the one-line view: id, type, first line, ref count, score.
+// DisplayLine returns a glyph's explicit summary, falling back to the first
+// body line for glyphs created before summaries existed.
+func DisplayLine(g *types.Glyph, width int) string {
+	if summary := strings.TrimSpace(g.Summary); summary != "" {
+		return FirstLine(summary, width)
+	}
+	return FirstLine(g.Body, width)
+}
+
+// Pin renders the one-line view: focus marker, id, type, summary, refs, score.
 func Pin(g *types.Glyph) string {
 	var b strings.Builder
+	if g.Starred {
+		b.WriteString("★ ")
+	}
 	fmt.Fprintf(&b, "%-8s", g.ID)
 	typ := g.Type
 	if typ == "" {
@@ -23,7 +35,7 @@ func Pin(g *types.Glyph) string {
 	if g.Rel != "" {
 		fmt.Fprintf(&b, " ←%s→", g.Rel)
 	}
-	b.WriteString("  " + FirstLine(g.Body, pinLineWidth))
+	b.WriteString("  " + DisplayLine(g, pinLineWidth))
 	if n := len(g.Refs); n > 0 {
 		fmt.Fprintf(&b, "  ↗%d", n)
 	}
@@ -56,6 +68,9 @@ func Card(g *types.Glyph) string {
 // Body renders the full glyph: body text, tags, refs, timestamps.
 func Body(g *types.Glyph) string {
 	var b strings.Builder
+	if g.Starred {
+		b.WriteString("★ ")
+	}
 	fmt.Fprintf(&b, "%s", g.ID)
 	if g.Type != "" {
 		fmt.Fprintf(&b, "  %s", g.Type)
@@ -64,7 +79,11 @@ func Body(g *types.Glyph) string {
 	if !g.UpdatedAt.Equal(g.CreatedAt) {
 		fmt.Fprintf(&b, "  amended %s", g.UpdatedAt.Format("2006-01-02 15:04"))
 	}
-	b.WriteString("\n\n" + strings.TrimSpace(g.Body) + "\n")
+	b.WriteString("\n\n")
+	if g.Summary != "" {
+		b.WriteString("summary: " + strings.TrimSpace(g.Summary) + "\n\n")
+	}
+	b.WriteString(strings.TrimSpace(g.Body) + "\n")
 	if len(g.Tags) > 0 {
 		b.WriteString("\ntags: " + strings.Join(g.Tags, ", ") + "\n")
 	}
@@ -88,6 +107,92 @@ func Neighborhood(g *types.Glyph, neighbors []*types.Glyph) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// Traversal renders a rooted, direction-aware relationship tree. The stored
+// graph may contain cycles and diamonds; links marked Repeat are shown once
+// with a return marker and never recursively expanded.
+func Traversal(t *types.Traversal, f types.Facet) string {
+	if t == nil || t.Root == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(Render(f, t.Root, nil))
+	if len(t.Links) > 0 {
+		b.WriteString("\n")
+		writeTraversalChildren(&b, t, f, t.Root.ID, "")
+	}
+	if t.Truncated {
+		b.WriteString("\n… traversal truncated; raise --limit or reduce --depth")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// NeighborhoodTraversal renders a full root glyph followed by the same
+// direction-aware depth-one branches used by related.
+func NeighborhoodTraversal(t *types.Traversal) string {
+	if t == nil || t.Root == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(Body(t.Root))
+	if len(t.Links) > 0 {
+		b.WriteString("\n\nneighbors:\n")
+		writeTraversalChildren(&b, t, types.FacetPin, t.Root.ID, "")
+	}
+	if t.Truncated {
+		b.WriteString("\n… neighborhood truncated")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func writeTraversalChildren(b *strings.Builder, t *types.Traversal, f types.Facet, from, prefix string) {
+	links := make([]*types.TraversalLink, 0)
+	for _, link := range t.Links {
+		if link.From == from {
+			links = append(links, link)
+		}
+	}
+	byID := make(map[string]*types.Glyph, len(t.Glyphs))
+	for _, g := range t.Glyphs {
+		byID[g.ID] = g
+	}
+	for i, link := range links {
+		last := i == len(links)-1
+		connector, continuation := "├─", "│  "
+		if last {
+			connector, continuation = "└─", "   "
+		}
+		arrow := "→"
+		if link.Direction == types.DirectionIn {
+			arrow = "←"
+		}
+		g := byID[link.To]
+		if g == nil {
+			continue
+		}
+		line := Render(f, g, nil)
+		if link.Repeat {
+			line += "  ↩"
+		}
+		lead := prefix + connector + " " + link.Edge.Rel + " " + arrow + " "
+		b.WriteString(indentContinuation(line, lead, prefix+continuation+"  ") + "\n")
+		if !link.Repeat {
+			writeTraversalChildren(b, t, f, link.To, prefix+continuation)
+		}
+	}
+}
+
+func indentContinuation(s, firstPrefix, restPrefix string) string {
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		if i == 0 {
+			lines[i] = firstPrefix + lines[i]
+		} else {
+			lines[i] = restPrefix + lines[i]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Render renders one glyph at the given facet (neighborhood needs neighbors

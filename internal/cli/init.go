@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -39,8 +40,18 @@ var initCmd = &cobra.Command{
 // anything else (design rule: don't pollute the workspace).
 func ensureGitignore(proj config.Project) {
 	path := filepath.Join(proj.Dir, ".gitignore")
-	if _, err := os.Stat(path); err == nil {
+	const migrationLock = "*.migrate.lock"
+	b, err := os.ReadFile(path)
+	if err == nil && strings.Contains(string(b), migrationLock) {
 		return
 	}
-	_ = os.WriteFile(path, []byte("*.db\n*.db-wal\n*.db-shm\n"), 0o644)
+	if os.IsNotExist(err) {
+		_ = os.WriteFile(path, []byte("*.db\n*.db-wal\n*.db-shm\n"+migrationLock+"\n"), 0o644)
+		return
+	}
+	if err != nil {
+		return
+	}
+	contents := strings.TrimRight(string(b), "\n") + "\n" + migrationLock + "\n"
+	_ = os.WriteFile(path, []byte(contents), 0o644)
 }

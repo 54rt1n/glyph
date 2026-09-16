@@ -20,23 +20,26 @@ type TypeCount struct {
 
 // Stats is the aggregate view backing `glyph context`.
 type Stats struct {
-	Glyphs    int            `json:"glyphs"`
-	Edges     int            `json:"edges"`
-	Refs      int            `json:"refs"`
-	Vecs      int            `json:"vectors"`
-	ByType    []TypeCount    `json:"by_type"`
-	TopTags   []TagCount     `json:"top_tags"`
-	Today     int            `json:"today"`
-	ThisWeek  int            `json:"this_week"`
-	LastEtch  time.Time      `json:"last_etch"`
-	Recent    []*types.Glyph `json:"recent,omitempty"` // recent sticky pins (decisions first)
-	Tag       string         `json:"tag,omitempty"`
+	Glyphs     int            `json:"glyphs"`
+	Edges      int            `json:"edges"`
+	Refs       int            `json:"refs"`
+	Vecs       int            `json:"vectors"`
+	ByType     []TypeCount    `json:"by_type"`
+	TopTags    []TagCount     `json:"top_tags"`
+	Today      int            `json:"today"`
+	ThisWeek   int            `json:"this_week"`
+	LastEtch   time.Time      `json:"last_etch"`
+	Recent     []*types.Glyph `json:"recent,omitempty"` // recent sticky pins (decisions first)
+	Focus      []*types.Glyph `json:"focus,omitempty"`
+	FocusTotal int            `json:"focus_total,omitempty"`
+	Tag        string         `json:"tag,omitempty"`
 }
 
-// GetStats aggregates counts for the context summary. recentLimit caps the
-// recent sticky pins (most recent `decision` glyphs, padded with most recent
-// of any type when there are too few decisions). f.Tag (and f.Type, if set)
-// scopes every count and the standing pin list.
+// GetStats aggregates counts for the context summary. All starred glyphs are
+// returned as focus. recentLimit caps the additional, unstarred recent pins.
+// A tagged context retains its standing view: decisions first, padded with
+// the most recent glyphs. f.Tag (and f.Type, if set) scopes every count and
+// standing/focus list.
 func (s *Store) GetStats(recentLimit int, f ListFilter) (*Stats, error) {
 	st := &Stats{Tag: f.Tag}
 	cond, args := listWhere(ListFilter{Type: f.Type, Tag: f.Tag})
@@ -123,17 +126,30 @@ func (s *Store) GetStats(recentLimit int, f ListFilter) (*Stats, error) {
 	}
 
 	if recentLimit > 0 {
-		decFilter := ListFilter{Type: f.Type, Tag: f.Tag, Limit: recentLimit}
-		if decFilter.Type == "" {
-			decFilter.Type = "decision"
-		}
-		decisions, _, err := s.ListGlyphs(decFilter)
+		focus, focusTotal, err := s.ListGlyphs(ListFilter{Type: f.Type, Tag: f.Tag, Starred: true, Limit: st.Glyphs})
 		if err != nil {
 			return nil, err
 		}
-		st.Recent = decisions
-		if f.Type == "" && len(st.Recent) < recentLimit {
-			pad, _, err := s.ListGlyphs(ListFilter{Tag: f.Tag, Limit: recentLimit})
+		st.Focus = focus
+		st.FocusTotal = focusTotal
+		if f.Tag == "" {
+			st.Recent, _, err = s.ListGlyphs(ListFilter{Type: f.Type, Unstarred: true, Limit: recentLimit})
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			decFilter := ListFilter{Type: f.Type, Tag: f.Tag, Unstarred: true, Limit: recentLimit}
+			if decFilter.Type == "" {
+				decFilter.Type = "decision"
+			}
+			decisions, _, err := s.ListGlyphs(decFilter)
+			if err != nil {
+				return nil, err
+			}
+			st.Recent = decisions
+		}
+		if f.Tag != "" && f.Type == "" && len(st.Recent) < recentLimit {
+			pad, _, err := s.ListGlyphs(ListFilter{Tag: f.Tag, Unstarred: true, Limit: recentLimit})
 			if err != nil {
 				return nil, err
 			}

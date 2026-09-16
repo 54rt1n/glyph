@@ -42,9 +42,11 @@ func (r Ref) String() string {
 // Glyph is a durable knowledge node.
 type Glyph struct {
 	ID        string    `json:"id"`
+	Summary   string    `json:"summary,omitempty"`
 	Body      string    `json:"body"`
 	Type      string    `json:"type,omitempty"`
 	Meta      string    `json:"meta,omitempty"`
+	Starred   bool      `json:"starred,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Tags      []string  `json:"tags,omitempty"`
@@ -63,4 +65,45 @@ type Edge struct {
 	Dst       string    `json:"dst"`
 	Rel       string    `json:"rel"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// Direction controls which edge ends are followed from each visited glyph.
+type Direction string
+
+const (
+	DirectionBoth Direction = "both"
+	DirectionOut  Direction = "out"
+	DirectionIn   Direction = "in"
+)
+
+// ValidDirection reports whether s names a supported graph traversal direction.
+func ValidDirection(s string) bool {
+	switch Direction(s) {
+	case DirectionBoth, DirectionOut, DirectionIn:
+		return true
+	}
+	return false
+}
+
+// TraversalLink records how an edge was encountered while unfolding a graph
+// from a root. From and To describe the traversal step; Src and Dst on Edge
+// preserve the edge's actual direction.
+type TraversalLink struct {
+	Edge      *Edge     `json:"edge"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Direction Direction `json:"direction"`
+	Depth     int       `json:"depth"`
+	Repeat    bool      `json:"repeat,omitempty"`
+}
+
+// Traversal is a bounded graph unfolded from Root. Glyphs contains the root
+// first followed by nodes in breadth-first discovery order.
+type Traversal struct {
+	Root      *Glyph           `json:"root"`
+	Glyphs    []*Glyph         `json:"glyphs"`
+	Links     []*TraversalLink `json:"links"`
+	Depth     int              `json:"depth"`
+	Direction Direction        `json:"direction"`
+	Truncated bool             `json:"truncated"`
 }

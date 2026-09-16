@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/54rt1n/glyph/internal/config"
 	"github.com/54rt1n/glyph/internal/store"
 	"github.com/54rt1n/glyph/internal/types"
 )
@@ -15,6 +18,24 @@ func sampleGlyph() *types.Glyph {
 		Body: "Pins by default; deepen with show.\nSecond line stays out of the ack.",
 		Type: "decision",
 		Tags: []string{"retrieval", "v0"},
+	}
+}
+
+func TestEnsureGitignoreAddsMigrationLock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+	if err := os.WriteFile(path, []byte("*.db\ncustom\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ensureGitignore(config.Project{Dir: dir})
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"*.db", "custom", "*.migrate.lock"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("gitignore missing %q: %s", want, b)
+		}
 	}
 }
 
@@ -48,6 +69,16 @@ func TestParseRef(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("parseRef(%q) = %+v, want %+v", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestCleanSummary(t *testing.T) {
+	got, err := cleanSummary("  Quill: chapter trade pending  ")
+	if err != nil || got != "Quill: chapter trade pending" {
+		t.Fatalf("clean summary = %q err=%v", got, err)
+	}
+	if _, err := cleanSummary("first\nsecond"); err == nil {
+		t.Fatal("multiline summary accepted")
 	}
 }
 
@@ -116,7 +147,7 @@ func TestRenderContextStanding(t *testing.T) {
 		ByType:  []store.TypeCount{{Type: "decision", Count: 1}, {Type: "note", Count: 1}},
 		TopTags: []store.TagCount{{Tag: "v0", Count: 1}},
 		Recent:  []*types.Glyph{g},
-	}, 300)
+	}, 300, false)
 	for _, want := range []string{"tag agent-runtime", "standing:", "g-a1b2", "co-tags:", "v0(1)"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("standing context missing %q:\n%s", want, out)
@@ -124,6 +155,70 @@ func TestRenderContextStanding(t *testing.T) {
 	}
 	if strings.Contains(out, "\nrecent:") {
 		t.Fatalf("tagged context still says recent:\n%s", out)
+	}
+}
+
+func TestRenderContextFocusDeduplicatesRecentAndVerboseInventory(t *testing.T) {
+	focus := sampleGlyph()
+	focus.Starred = true
+	recent := sampleGlyph()
+	recent.ID = "g-c3d4"
+	stats := &store.Stats{
+		Glyphs: 2, Edges: 1, Refs: 4, Vecs: 2, Today: 2, ThisWeek: 2,
+		Focus: []*types.Glyph{focus}, Recent: []*types.Glyph{focus, recent},
+		ByType: []store.TypeCount{{Type: "decision", Count: 2}},
+	}
+	out := renderContext(stats, 300, false)
+	for _, want := range []string{"2 glyphs · 1 edges", "focus:", "recent:", "★", "g-c3d4"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("context missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, focus.ID) != 1 || strings.Contains(out, "inventory:") {
+		t.Fatalf("default context duplicate/inventory:\n%s", out)
+	}
+	verbose := renderContext(stats, 300, true)
+	if !strings.Contains(verbose, "inventory: 4 refs · 2 vectors") || !strings.Contains(verbose, "by type:") {
+		t.Fatalf("verbose context:\n%s", verbose)
+	}
+}
+
+func TestContextDefaultsToUnlimitedBudget(t *testing.T) {
+	if got := contextCmd.Flags().Lookup("budget").DefValue; got != "0" {
+		t.Fatalf("context budget default = %q, want unlimited", got)
+	}
+}
+
+func TestJSONGlyphUsesSummaryAndStar(t *testing.T) {
+	g := sampleGlyph()
+	g.Summary = "scan me"
+	g.Starred = true
+	m := jsonGlyph(types.FacetPin, g).(map[string]any)
+	if m["line"] != "scan me" || m["summary"] != "scan me" || m["starred"] != true {
+		t.Fatalf("pin json = %#v", m)
+	}
+}
+
+func TestJSONTraversalKeepsRelatedGlyphsAndAddsEdges(t *testing.T) {
+	root, child := sampleGlyph(), sampleGlyph()
+	child.ID = "g-c3d4"
+	traversal := &types.Traversal{
+		Root: root, Glyphs: []*types.Glyph{root, child}, Depth: 1, Direction: types.DirectionBoth,
+		Links: []*types.TraversalLink{{
+			Edge: &types.Edge{ID: "e-1", Src: root.ID, Dst: child.ID, Rel: "supports"},
+			From: root.ID, To: child.ID, Direction: types.DirectionOut, Depth: 1,
+		}},
+	}
+	out := jsonTraversal(types.FacetPin, traversal)
+	if nodes := out["nodes"].([]any); len(nodes) != 2 {
+		t.Fatalf("nodes = %#v", nodes)
+	}
+	glyphs := out["glyphs"].([]any)
+	if len(glyphs) != 1 || glyphs[0].(map[string]any)["rel"] != "supports" {
+		t.Fatalf("compat glyphs = %#v", glyphs)
+	}
+	if edges := out["edges"].([]map[string]any); len(edges) != 1 || edges[0]["direction"] != types.DirectionOut {
+		t.Fatalf("edges = %#v", edges)
 	}
 }
 

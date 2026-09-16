@@ -48,6 +48,112 @@ func TestCRUDRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSummaryStarRoundTripAmendAndFilter(t *testing.T) {
+	s := testStore(t)
+	now := time.Now()
+	g := &types.Glyph{
+		ID: "g-focus", Summary: "Quill: chapter trade pending", Body: "Detailed body without the scan terms.",
+		Type: "decision", Starred: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateGlyph(g); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetGlyph(g.ID)
+	if err != nil || got.Summary != g.Summary || !got.Starred {
+		t.Fatalf("round trip = %+v err=%v", got, err)
+	}
+	starred, total, err := s.ListGlyphs(ListFilter{Starred: true})
+	if err != nil || total != 1 || len(starred) != 1 || starred[0].ID != g.ID {
+		t.Fatalf("star filter = %v total=%d err=%v", starred, total, err)
+	}
+	hits, err := s.Search("Quill", 5, nil, ListFilter{})
+	if err != nil || len(hits) != 1 || hits[0].ID != g.ID {
+		t.Fatalf("summary FTS hits=%v err=%v", hits, err)
+	}
+	clear := ""
+	unstar := false
+	got, changed, err := s.AmendGlyph(g.ID, GlyphPatch{Summary: &clear, Starred: &unstar})
+	if err != nil || !changed || got.Summary != "" || got.Starred {
+		t.Fatalf("clear = %+v changed=%v err=%v", got, changed, err)
+	}
+	hits, err = s.Search("Quill", 5, nil, ListFilter{})
+	if err != nil || len(hits) != 0 {
+		t.Fatalf("cleared summary remained searchable: %v err=%v", hits, err)
+	}
+}
+
+func TestTraverseRelatedDepthDirectionCycleAndLimit(t *testing.T) {
+	s := testStore(t)
+	for _, g := range []struct{ id, body string }{
+		{"g-root", "root"}, {"g-out1", "out one"}, {"g-out2", "out two"}, {"g-in01", "incoming"},
+	} {
+		mkGlyph(t, s, g.id, g.body, "note", nil, nil)
+	}
+	for _, edge := range []struct{ src, dst, rel string }{
+		{"g-root", "g-out1", "supports"},
+		{"g-out1", "g-out2", "leads-to"},
+		{"g-out2", "g-root", "cycles"},
+		{"g-in01", "g-root", "motivates"},
+	} {
+		if _, err := s.CreateEdge(edge.src, edge.dst, edge.rel); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := s.TraverseRelated("g-root", 2, types.DirectionOut, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(out.Glyphs); !equalStrings(got, []string{"g-root", "g-out1", "g-out2"}) {
+		t.Fatalf("out glyphs = %v", got)
+	}
+	if len(out.Links) != 2 || out.Links[0].Direction != types.DirectionOut {
+		t.Fatalf("out links = %+v", out.Links)
+	}
+
+	in, err := s.TraverseRelated("g-root", 1, types.DirectionIn, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(in.Glyphs); !equalStrings(got, []string{"g-root", "g-in01", "g-out2"}) {
+		t.Fatalf("in glyphs = %v", got)
+	}
+	for _, link := range in.Links {
+		if link.Direction != types.DirectionIn {
+			t.Fatalf("incoming link direction = %s", link.Direction)
+		}
+	}
+
+	both, err := s.TraverseRelated("g-root", 3, types.DirectionBoth, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRepeat := false
+	for _, link := range both.Links {
+		foundRepeat = foundRepeat || link.Repeat
+	}
+	if !foundRepeat || len(both.Glyphs) != 4 {
+		t.Fatalf("cycle traversal glyphs=%v links=%+v", idsOf(both.Glyphs), both.Links)
+	}
+
+	limited, err := s.TraverseRelated("g-root", 3, types.DirectionBoth, 2)
+	if err != nil || !limited.Truncated || len(limited.Glyphs) != 2 {
+		t.Fatalf("limited = %+v err=%v", limited, err)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestDeleteCascades(t *testing.T) {
 	s := testStore(t)
 	mkGlyph(t, s, "g-aaaa", "src", "note", []string{"x"}, []types.Ref{{Kind: "path", Target: "a.go"}})
@@ -81,9 +187,11 @@ func TestAmend(t *testing.T) {
 	mkGlyph(t, s, "g-aaaa", "old body", "note", []string{"draft"}, []types.Ref{{Kind: "url", Target: "https://old"}})
 	body := "new body"
 	typ := "decision"
-	g, changed, err := s.AmendGlyph("g-aaaa", &body, &typ,
-		[]string{"final"}, []string{"draft"},
-		[]types.Ref{{Kind: "path", Target: "x.go"}}, []types.Ref{{Kind: "url", Target: "https://old"}})
+	g, changed, err := s.AmendGlyph("g-aaaa", GlyphPatch{
+		Body: &body, Type: &typ,
+		AddTags: []string{"final"}, RmTags: []string{"draft"},
+		AddRefs: []types.Ref{{Kind: "path", Target: "x.go"}}, RmRefs: []types.Ref{{Kind: "url", Target: "https://old"}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,11 +208,11 @@ func TestAmend(t *testing.T) {
 		t.Fatalf("refs = %v", g.Refs)
 	}
 	// amending with same body reports no change
-	_, changed, err = s.AmendGlyph("g-aaaa", &body, nil, nil, nil, nil, nil)
+	_, changed, err = s.AmendGlyph("g-aaaa", GlyphPatch{Body: &body})
 	if err != nil || changed {
 		t.Fatalf("same-body amend: changed=%v err=%v", changed, err)
 	}
-	if _, _, err := s.AmendGlyph("g-nope", &body, nil, nil, nil, nil, nil); !errors.Is(err, ErrNotFound) {
+	if _, _, err := s.AmendGlyph("g-nope", GlyphPatch{Body: &body}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing amend err = %v", err)
 	}
 }
@@ -175,7 +283,7 @@ func TestFTSSyncAndSearch(t *testing.T) {
 
 	// update propagates through the FTS trigger
 	body := "cooking pasta perfectly"
-	if _, _, err := s.AmendGlyph("g-aaaa", &body, nil, nil, nil, nil, nil); err != nil {
+	if _, _, err := s.AmendGlyph("g-aaaa", GlyphPatch{Body: &body}); err != nil {
 		t.Fatal(err)
 	}
 	hits, err = s.Search("retrieval", 10, nil, ListFilter{})
@@ -304,11 +412,52 @@ func TestStats(t *testing.T) {
 	if st.Today != 2 {
 		t.Fatalf("today = %d", st.Today)
 	}
-	if len(st.Recent) != 2 || st.Recent[0].Type != "decision" {
+	if len(st.Recent) != 2 {
 		t.Fatalf("recent = %v", st.Recent)
 	}
 	if len(st.TopTags) == 0 || st.TopTags[0].Tag != "x" {
 		t.Fatalf("tags = %v", st.TopTags)
+	}
+}
+
+func TestStatsReturnsAllFocusAndFiveAdditionalRecent(t *testing.T) {
+	s := testStore(t)
+	base := time.Now().Add(-time.Hour)
+	starredIDs := []string{"g-s000", "g-s001", "g-s002", "g-s003", "g-s004", "g-s005"}
+	recentIDs := []string{"g-u000", "g-u001", "g-u002", "g-u003", "g-u004", "g-u005", "g-u006"}
+	for i, gid := range append(starredIDs, recentIDs...) {
+		created := base.Add(time.Duration(i) * time.Second)
+		typ := "note"
+		if gid == "g-u000" {
+			typ = "decision" // old decisions must not outrank newer default recents
+		}
+		g := &types.Glyph{
+			ID: gid, Body: gid, Type: typ, Starred: i < len(starredIDs),
+			CreatedAt: created, UpdatedAt: created,
+		}
+		if err := s.CreateGlyph(g); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := s.GetStats(5, ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Focus) != len(starredIDs) || st.FocusTotal != len(starredIDs) {
+		t.Fatalf("focus len=%d total=%d, want %d", len(st.Focus), st.FocusTotal, len(starredIDs))
+	}
+	if len(st.Recent) != 5 {
+		t.Fatalf("recent len=%d, want 5: %v", len(st.Recent), idsOf(st.Recent))
+	}
+	for _, g := range st.Recent {
+		if g.Starred {
+			t.Fatalf("starred glyph %s leaked into additional recents", g.ID)
+		}
+	}
+	wantRecent := []string{"g-u006", "g-u005", "g-u004", "g-u003", "g-u002"}
+	if got := idsOf(st.Recent); !equalStrings(got, wantRecent) {
+		t.Fatalf("recent = %v, want %v", got, wantRecent)
 	}
 }
 

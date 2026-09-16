@@ -35,8 +35,8 @@ func (s *Store) CreateGlyph(g *types.Glyph) error {
 }
 
 func insertGlyph(tx *sql.Tx, g *types.Glyph) error {
-	_, err := tx.Exec(`INSERT INTO glyphs (id, body, type, meta, created_at, updated_at) VALUES (?,?,?,?,?,?)`,
-		g.ID, g.Body, nullable(g.Type), nullable(g.Meta), g.CreatedAt.Unix(), g.UpdatedAt.Unix())
+	_, err := tx.Exec(`INSERT INTO glyphs (id, summary, body, type, meta, starred, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+		g.ID, nullable(g.Summary), g.Body, nullable(g.Type), nullable(g.Meta), g.Starred, g.CreatedAt.Unix(), g.UpdatedAt.Unix())
 	if err != nil {
 		return err
 	}
@@ -54,10 +54,22 @@ func insertGlyph(tx *sql.Tx, g *types.Glyph) error {
 	return nil
 }
 
-// AmendGlyph applies in-place changes to a glyph and bumps updated_at.
-// body/typ are applied when non-nil. Returns the updated glyph and whether
-// the body changed (caller may re-embed).
-func (s *Store) AmendGlyph(gid string, body, typ *string, addTags, rmTags []string, addRefs, rmRefs []types.Ref) (*types.Glyph, bool, error) {
+// GlyphPatch describes an in-place glyph update. Pointer fields distinguish
+// "unchanged" from setting the corresponding value to empty/false.
+type GlyphPatch struct {
+	Body    *string
+	Summary *string
+	Type    *string
+	Starred *bool
+	AddTags []string
+	RmTags  []string
+	AddRefs []types.Ref
+	RmRefs  []types.Ref
+}
+
+// AmendGlyph applies an in-place patch and bumps updated_at. It reports
+// whether searchable text changed so the caller can refresh the embedding.
+func (s *Store) AmendGlyph(gid string, p GlyphPatch) (*types.Glyph, bool, error) {
 	if !s.Exists(gid) {
 		return nil, false, ErrNotFound
 	}
@@ -67,43 +79,57 @@ func (s *Store) AmendGlyph(gid string, body, typ *string, addTags, rmTags []stri
 	}
 	defer tx.Rollback()
 	now := time.Now().Unix()
-	bodyChanged := false
-	if body != nil {
-		res, err := tx.Exec(`UPDATE glyphs SET body = ?, updated_at = ? WHERE id = ? AND body != ?`, *body, now, gid, *body)
+	searchableChanged := false
+	if p.Body != nil {
+		res, err := tx.Exec(`UPDATE glyphs SET body = ?, updated_at = ? WHERE id = ? AND body != ?`, *p.Body, now, gid, *p.Body)
 		if err != nil {
 			return nil, false, err
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
-			bodyChanged = true
+			searchableChanged = true
 		}
 	}
-	if typ != nil {
-		if _, err := tx.Exec(`UPDATE glyphs SET type = ?, updated_at = ? WHERE id = ?`, nullable(*typ), now, gid); err != nil {
+	if p.Summary != nil {
+		res, err := tx.Exec(`UPDATE glyphs SET summary = ?, updated_at = ? WHERE id = ? AND COALESCE(summary, '') != ?`, nullable(*p.Summary), now, gid, *p.Summary)
+		if err != nil {
+			return nil, false, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			searchableChanged = true
+		}
+	}
+	if p.Type != nil {
+		if _, err := tx.Exec(`UPDATE glyphs SET type = ?, updated_at = ? WHERE id = ?`, nullable(*p.Type), now, gid); err != nil {
 			return nil, false, err
 		}
 	}
-	for _, t := range addTags {
+	if p.Starred != nil {
+		if _, err := tx.Exec(`UPDATE glyphs SET starred = ?, updated_at = ? WHERE id = ?`, *p.Starred, now, gid); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, t := range p.AddTags {
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO glyph_tags (glyph_id, tag) VALUES (?,?)`, gid, t); err != nil {
 			return nil, false, err
 		}
 	}
-	for _, t := range rmTags {
+	for _, t := range p.RmTags {
 		if _, err := tx.Exec(`DELETE FROM glyph_tags WHERE glyph_id = ? AND tag = ?`, gid, t); err != nil {
 			return nil, false, err
 		}
 	}
-	for _, r := range addRefs {
+	for _, r := range p.AddRefs {
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO glyph_refs (id, glyph_id, kind, target, label, created_at) VALUES (?,?,?,?,?,?)`,
 			id.Edge(), gid, r.Kind, r.Target, nullable(r.Label), now); err != nil {
 			return nil, false, err
 		}
 	}
-	for _, r := range rmRefs {
+	for _, r := range p.RmRefs {
 		if _, err := tx.Exec(`DELETE FROM glyph_refs WHERE glyph_id = ? AND kind = ? AND target = ?`, gid, r.Kind, r.Target); err != nil {
 			return nil, false, err
 		}
 	}
-	if len(addTags)+len(rmTags)+len(addRefs)+len(rmRefs) > 0 {
+	if len(p.AddTags)+len(p.RmTags)+len(p.AddRefs)+len(p.RmRefs) > 0 {
 		if _, err := tx.Exec(`UPDATE glyphs SET updated_at = ? WHERE id = ?`, now, gid); err != nil {
 			return nil, false, err
 		}
@@ -112,23 +138,23 @@ func (s *Store) AmendGlyph(gid string, body, typ *string, addTags, rmTags []stri
 		return nil, false, err
 	}
 	g, err := s.GetGlyph(gid)
-	return g, bodyChanged, err
+	return g, searchableChanged, err
 }
 
 // GetGlyph fetches one glyph with tags and refs.
 func (s *Store) GetGlyph(gid string) (*types.Glyph, error) {
 	g := &types.Glyph{}
-	var typ, meta sql.NullString
+	var summary, typ, meta sql.NullString
 	var created, updated int64
-	err := s.db.QueryRow(`SELECT id, body, type, meta, created_at, updated_at FROM glyphs WHERE id = ?`, gid).
-		Scan(&g.ID, &g.Body, &typ, &meta, &created, &updated)
+	err := s.db.QueryRow(`SELECT id, summary, body, type, meta, starred, created_at, updated_at FROM glyphs WHERE id = ?`, gid).
+		Scan(&g.ID, &summary, &g.Body, &typ, &meta, &g.Starred, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	g.Type, g.Meta = typ.String, meta.String
+	g.Summary, g.Type, g.Meta = summary.String, typ.String, meta.String
 	g.CreatedAt, g.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
 	if err := s.attachTagsRefs([]*types.Glyph{g}); err != nil {
 		return nil, err
@@ -242,11 +268,13 @@ func (s *Store) ApplyGraph(gs []*types.Glyph, edges []*types.Edge) error {
 
 // ListFilter narrows ListGlyphs.
 type ListFilter struct {
-	Type  string
-	Tag   string
-	Since time.Time
-	Until time.Time
-	Limit int
+	Type      string
+	Tag       string
+	Starred   bool
+	Unstarred bool
+	Since     time.Time
+	Until     time.Time
+	Limit     int
 }
 
 // listWhere builds a glyphs-aliased-as-g predicate from f.
@@ -258,6 +286,12 @@ func listWhere(f ListFilter) (string, []any) {
 	if f.Tag != "" {
 		where = append(where, "g.id IN (SELECT glyph_id FROM glyph_tags WHERE tag = ?)")
 		args = append(args, f.Tag)
+	}
+	if f.Starred {
+		where = append(where, "g.starred = 1")
+	}
+	if f.Unstarred {
+		where = append(where, "g.starred = 0")
 	}
 	if !f.Since.IsZero() {
 		where, args = append(where, "g.created_at >= ?"), append(args, f.Since.Unix())
@@ -281,7 +315,7 @@ func (s *Store) ListGlyphs(f ListFilter) ([]*types.Glyph, int, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(`SELECT g.id, g.body, g.type, g.meta, g.created_at, g.updated_at
+	rows, err := s.db.Query(`SELECT g.id, g.summary, g.body, g.type, g.meta, g.starred, g.created_at, g.updated_at
 		FROM glyphs g WHERE `+cond+` ORDER BY g.created_at DESC, g.id LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, 0, err
@@ -296,41 +330,29 @@ func (s *Store) ListGlyphs(f ListFilter) ([]*types.Glyph, int, error) {
 	return gs, total, nil
 }
 
-// Related returns 1-hop neighbors of gid (both directions), annotated with
-// the connecting relation.
+// Related returns 1-hop neighbors of gid in both directions. It is retained
+// as a thin compatibility helper; TraverseRelated exposes edge direction and
+// recursive traversal.
 func (s *Store) Related(gid string, limit int) ([]*types.Glyph, error) {
-	if !s.Exists(gid) {
-		return nil, ErrNotFound
-	}
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.Query(`
-		SELECT g.id, g.body, g.type, g.meta, g.created_at, g.updated_at, e.rel
-		FROM edges e JOIN glyphs g ON g.id = CASE WHEN e.src = ? THEN e.dst ELSE e.src END
-		WHERE e.src = ? OR e.dst = ?
-		ORDER BY e.created_at DESC LIMIT ?`, gid, gid, gid, limit)
+	t, err := s.TraverseRelated(gid, 1, types.DirectionBoth, limit+1)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var gs []*types.Glyph
-	for rows.Next() {
-		g := &types.Glyph{}
-		var typ, meta sql.NullString
-		var created, updated int64
-		if err := rows.Scan(&g.ID, &g.Body, &typ, &meta, &created, &updated, &g.Rel); err != nil {
-			return nil, err
+	gs := append([]*types.Glyph(nil), t.Glyphs[1:]...)
+	rels := make(map[string]string, len(t.Links))
+	for _, link := range t.Links {
+		if !link.Repeat {
+			rels[link.To] = link.Edge.Rel
 		}
-		g.Type, g.Meta = typ.String, meta.String
-		g.CreatedAt, g.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
-		gs = append(gs, g)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	for _, g := range gs {
+		g.Rel = rels[g.ID]
 	}
-	if err := s.attachTagsRefs(gs); err != nil {
-		return nil, err
+	if limit > 0 && len(gs) > limit {
+		gs = gs[:limit]
 	}
 	return gs, nil
 }
@@ -340,12 +362,12 @@ func scanGlyphs(rows *sql.Rows) ([]*types.Glyph, error) {
 	var gs []*types.Glyph
 	for rows.Next() {
 		g := &types.Glyph{}
-		var typ, meta sql.NullString
+		var summary, typ, meta sql.NullString
 		var created, updated int64
-		if err := rows.Scan(&g.ID, &g.Body, &typ, &meta, &created, &updated); err != nil {
+		if err := rows.Scan(&g.ID, &summary, &g.Body, &typ, &meta, &g.Starred, &created, &updated); err != nil {
 			return nil, err
 		}
-		g.Type, g.Meta = typ.String, meta.String
+		g.Summary, g.Type, g.Meta = summary.String, typ.String, meta.String
 		g.CreatedAt, g.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
 		gs = append(gs, g)
 	}

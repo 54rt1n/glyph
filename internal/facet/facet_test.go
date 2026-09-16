@@ -45,6 +45,26 @@ func TestPinLongBodyTruncated(t *testing.T) {
 	}
 }
 
+func TestSummaryAndStarDrivePinButBodyStillShowsDetail(t *testing.T) {
+	g := sample()
+	g.Summary = "Quill: chapter trade pending"
+	g.Starred = true
+	p := Pin(g)
+	if !strings.Contains(p, "★") || !strings.Contains(p, g.Summary) || strings.Contains(p, "Pins by default") {
+		t.Fatalf("summary pin = %q", p)
+	}
+	b := Body(g)
+	for _, want := range []string{"summary: " + g.Summary, "Pins by default", "Second line"} {
+		if !strings.Contains(b, want) {
+			t.Fatalf("body missing %q:\n%s", want, b)
+		}
+	}
+	g.Summary = ""
+	if !strings.Contains(Pin(g), "Pins by default") {
+		t.Fatalf("legacy fallback missing: %q", Pin(g))
+	}
+}
+
 func TestBodyShowsEverything(t *testing.T) {
 	b := Body(sample())
 	for _, want := range []string{"Second line", "tags: retrieval, v0", "url:https://example.com", "bead:bd-x7k2"} {
@@ -61,6 +81,24 @@ func TestNeighborhoodAppendsPins(t *testing.T) {
 	out := Neighborhood(sample(), []*types.Glyph{n})
 	if !strings.Contains(out, "neighbors:") || !strings.Contains(out, "g-c3d4") {
 		t.Fatalf("neighborhood:\n%s", out)
+	}
+}
+
+func TestTraversalRendersDirectionsAndRepeats(t *testing.T) {
+	root, out, in := sample(), sample(), sample()
+	root.ID, out.ID, in.ID = "g-root", "g-out1", "g-in01"
+	tree := &types.Traversal{
+		Root: root, Glyphs: []*types.Glyph{root, out, in}, Depth: 2, Direction: types.DirectionBoth,
+		Links: []*types.TraversalLink{
+			{Edge: &types.Edge{Rel: "supports", Src: root.ID, Dst: out.ID}, From: root.ID, To: out.ID, Direction: types.DirectionOut, Depth: 1},
+			{Edge: &types.Edge{Rel: "motivates", Src: in.ID, Dst: root.ID}, From: root.ID, To: in.ID, Direction: types.DirectionIn, Depth: 1, Repeat: true},
+		},
+	}
+	got := Traversal(tree, types.FacetPin)
+	for _, want := range []string{"supports →", "motivates ←", "↩", "g-out1", "g-in01"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("traversal missing %q:\n%s", want, got)
+		}
 	}
 }
 

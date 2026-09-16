@@ -10,7 +10,7 @@ import (
 func TestParseGraph(t *testing.T) {
 	g, err := parseGraph([]byte(`{
 		"etch": [
-			{"id": "dec", "type": "decision", "tags": ["runtime"], "refs": ["path:foo.go"], "body": "Split it"},
+			{"id": "dec", "summary": "Runtime split", "starred": true, "type": "decision", "tags": ["runtime"], "refs": ["path:foo.go"], "body": "Split it"},
 			{"id": "n1", "type": "note", "body": "PR1", "refs": [{"kind": "url", "target": "https://x"}]}
 		],
 		"link": [{"src": "dec", "dst": "n1", "as": "supports"}]
@@ -18,7 +18,7 @@ func TestParseGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(g.Etch) != 2 || g.Etch[0].Type != "decision" || len(g.Etch[0].Tags) != 1 {
+	if len(g.Etch) != 2 || g.Etch[0].Summary != "Runtime split" || !g.Etch[0].Starred || g.Etch[0].Type != "decision" || len(g.Etch[0].Tags) != 1 {
 		t.Fatalf("etch = %+v", g.Etch)
 	}
 	if len(g.Etch[0].Refs) != 1 || g.Etch[0].Refs[0].Kind != "path" {
@@ -37,6 +37,9 @@ func TestParseGraph(t *testing.T) {
 	if _, err := parseGraph([]byte(`{"etch":[{"body":"  "}]}`)); err == nil || !strings.Contains(err.Error(), "empty body") {
 		t.Fatalf("blank body err = %v", err)
 	}
+	if _, err := parseGraph([]byte(`{"etch":[{"summary":"first\nsecond","body":"ok"}]}`)); err == nil || !strings.Contains(err.Error(), "one line") {
+		t.Fatalf("multiline summary err = %v", err)
+	}
 	if _, err := parseGraph([]byte(`{"link":[{"src":"a"}]}`)); err == nil || !strings.Contains(err.Error(), "src and dst") {
 		t.Fatalf("partial link err = %v", err)
 	}
@@ -45,7 +48,7 @@ func TestParseGraph(t *testing.T) {
 func TestResolveGraphAliases(t *testing.T) {
 	parsed, err := parseGraph([]byte(`{
 		"etch": [
-			{"id": "dec", "type": "decision", "body": "Standing decision"},
+			{"id": "dec", "summary": "Standing runtime decision", "starred": true, "type": "decision", "body": "Standing decision"},
 			{"id": "n1", "body": "note one"}
 		],
 		"link": [
@@ -63,6 +66,9 @@ func TestResolveGraphAliases(t *testing.T) {
 	}
 	if len(got.Glyphs) != 2 || len(got.Edges) != 2 {
 		t.Fatalf("resolved %d glyphs %d edges", len(got.Glyphs), len(got.Edges))
+	}
+	if got.Glyphs[0].Summary != "Standing runtime decision" || !got.Glyphs[0].Starred {
+		t.Fatalf("resolved summary/star = %+v", got.Glyphs[0])
 	}
 	dec := got.Aliases["dec"]
 	n1 := got.Aliases["n1"]
