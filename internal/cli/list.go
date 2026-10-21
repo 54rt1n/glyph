@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -47,12 +48,12 @@ var listCmd = &cobra.Command{
 			return emitJSON(map[string]any{"facet": f, "total": total, "glyphs": jsonGlyphs(f, gs)})
 		}
 		if len(gs) == 0 {
-			fmt.Println("no glyphs match — `glyph etch \"…\"` to write the first one")
+			fmt.Fprintln(os.Stderr, "no glyphs match — `glyph etch \"…\"` to write the first one")
 			return nil
 		}
 		fmt.Println(facet.List(f, gs))
 		if note := facet.TruncationNote(len(gs), total, "--limit"); note != "" {
-			fmt.Println(note)
+			fmt.Fprintln(os.Stderr, note)
 		}
 		return nil
 	},

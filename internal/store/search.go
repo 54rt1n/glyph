@@ -24,8 +24,10 @@ const rrfK = 60 // standard reciprocal-rank-fusion constant
 
 // Search ranks glyphs for the query: BM25 over FTS5 always, blended with
 // cosine similarity over stored vectors via reciprocal rank fusion when an
-// embedder is available and vectors exist. filter narrows candidates by
-// type/tag/time before the limit is applied (its Limit field is ignored).
+// embedder is available and vectors exist. filter constrains every retriever's
+// own candidate query, so each one spends its pool on glyphs that can actually
+// be returned — filtering after the pool was cut silently lost matches that
+// unfiltered glyphs had crowded out (its Limit field is ignored).
 func (s *Store) Search(query string, limit int, emb Embedder, filter ListFilter) ([]Hit, error) {
 	if limit <= 0 {
 		limit = 10
@@ -34,14 +36,15 @@ func (s *Store) Search(query string, limit int, emb Embedder, filter ListFilter)
 	if pool < 50 {
 		pool = 50
 	}
+	cond, condArgs := listWhere(filter)
 
-	lexical, err := s.searchFTS(query, pool)
+	lexical, err := s.searchFTS(query, pool, cond, condArgs)
 	if err != nil {
 		return nil, err
 	}
 	// Tag hits rank after text hits: exact tag matches on query tokens keep
 	// tag-only vocabulary (e.g. `--tag retrieval`) from being a lexical miss.
-	tagHits, err := s.searchTags(query, pool)
+	tagHits, err := s.searchTags(query, pool, cond, condArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +61,7 @@ func (s *Store) Search(query string, limit int, emb Embedder, filter ListFilter)
 	var semantic []string
 	if emb != nil {
 		if qv, err := emb.Encode(query); err == nil && qv != nil {
-			semantic, err = s.searchVec(qv, emb.Model(), pool)
+			semantic, err = s.searchVec(qv, emb.Model(), pool, cond, condArgs)
 			if err != nil {
 				return nil, err
 			}
@@ -82,79 +85,24 @@ func (s *Store) Search(query string, limit int, emb Embedder, filter ListFilter)
 		}
 		return hits[i].ID < hits[j].ID
 	})
-	hits, err = s.filterHits(hits, filter)
-	if err != nil {
-		return nil, err
-	}
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
 	return hits, nil
 }
 
-// filterHits keeps only hits whose glyphs satisfy the type/tag/time filter.
-func (s *Store) filterHits(hits []Hit, f ListFilter) ([]Hit, error) {
-	if f.Type == "" && f.Tag == "" && !f.Starred && f.Since.IsZero() && f.Until.IsZero() || len(hits) == 0 {
-		return hits, nil
-	}
-	where, args := []string{}, []any{}
-	if f.Type != "" {
-		where, args = append(where, "type = ?"), append(args, f.Type)
-	}
-	if f.Tag != "" {
-		where = append(where, "id IN (SELECT glyph_id FROM glyph_tags WHERE tag = ?)")
-		args = append(args, f.Tag)
-	}
-	if f.Starred {
-		where = append(where, "starred = 1")
-	}
-	if !f.Since.IsZero() {
-		where, args = append(where, "created_at >= ?"), append(args, f.Since.Unix())
-	}
-	if !f.Until.IsZero() {
-		where, args = append(where, "created_at < ?"), append(args, f.Until.Unix())
-	}
-	ph := make([]string, len(hits))
-	for i, h := range hits {
-		ph[i] = "?"
-		args = append(args, h.ID)
-	}
-	rows, err := s.db.Query(`SELECT id FROM glyphs WHERE `+strings.Join(where, " AND ")+
-		` AND id IN (`+strings.Join(ph, ",")+`)`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	keep := map[string]bool{}
-	for rows.Next() {
-		var gid string
-		if err := rows.Scan(&gid); err != nil {
-			return nil, err
-		}
-		keep[gid] = true
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	out := hits[:0]
-	for _, h := range hits {
-		if keep[h.ID] {
-			out = append(out, h)
-		}
-	}
-	return out, nil
-}
-
 // searchFTS returns glyph ids ranked by BM25. The query is tokenized and
 // OR-joined so natural-language questions favor recall; BM25 handles rank.
-func (s *Store) searchFTS(query string, limit int) ([]string, error) {
+func (s *Store) searchFTS(query string, limit int, cond string, condArgs []any) ([]string, error) {
 	match := ftsQuery(query)
 	if match == "" {
 		return nil, nil
 	}
+	args := append([]any{match}, condArgs...)
+	args = append(args, limit)
 	rows, err := s.db.Query(`
 		SELECT g.id FROM glyphs_fts f JOIN glyphs g ON g.rowid = f.rowid
-		WHERE glyphs_fts MATCH ? ORDER BY bm25(glyphs_fts) LIMIT ?`, match, limit)
+		WHERE glyphs_fts MATCH ? AND (`+cond+`) ORDER BY bm25(glyphs_fts) LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -172,20 +120,21 @@ func (s *Store) searchFTS(query string, limit int) ([]string, error) {
 
 // searchTags returns ids of glyphs whose tags exactly match any query token
 // (case-insensitive), most recent first.
-func (s *Store) searchTags(query string, limit int) ([]string, error) {
+func (s *Store) searchTags(query string, limit int, cond string, condArgs []any) ([]string, error) {
 	tokens := tokenize(query)
 	if len(tokens) == 0 {
 		return nil, nil
 	}
 	ph := make([]string, len(tokens))
-	args := make([]any, len(tokens))
+	args := make([]any, 0, len(tokens)+len(condArgs)+1)
 	for i, tok := range tokens {
 		ph[i] = "?"
-		args[i] = strings.ToLower(tok)
+		args = append(args, strings.ToLower(tok))
 	}
+	args = append(args, condArgs...)
 	rows, err := s.db.Query(`
 		SELECT DISTINCT t.glyph_id FROM glyph_tags t JOIN glyphs g ON g.id = t.glyph_id
-		WHERE lower(t.tag) IN (`+strings.Join(ph, ",")+`)
+		WHERE lower(t.tag) IN (`+strings.Join(ph, ",")+`) AND (`+cond+`)
 		ORDER BY g.created_at DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
@@ -220,8 +169,10 @@ func ftsQuery(q string) string {
 
 // searchVec brute-force ranks stored vectors for the model by cosine
 // similarity against qv.
-func (s *Store) searchVec(qv []float32, model string, limit int) ([]string, error) {
-	rows, err := s.db.Query(`SELECT glyph_id, vec FROM glyph_vecs WHERE model = ?`, model)
+func (s *Store) searchVec(qv []float32, model string, limit int, cond string, condArgs []any) ([]string, error) {
+	args := append([]any{model}, condArgs...)
+	rows, err := s.db.Query(`SELECT v.glyph_id, v.vec FROM glyph_vecs v JOIN glyphs g ON g.id = v.glyph_id
+		WHERE v.model = ? AND (`+cond+`)`, args...)
 	if err != nil {
 		return nil, err
 	}

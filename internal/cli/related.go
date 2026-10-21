@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -44,8 +45,11 @@ var relatedCmd = &cobra.Command{
 			return emitJSON(jsonTraversal(f, traversal))
 		}
 		fmt.Println(facet.Traversal(traversal, f))
+		if traversal.Truncated {
+			fmt.Fprintln(os.Stderr, "… traversal truncated; raise --limit or reduce --depth")
+		}
 		if len(traversal.Links) == 0 && relatedDepth > 0 && !traversal.Truncated {
-			fmt.Println("no links yet — `glyph link " + args[0] + " <other-id> --as related`")
+			fmt.Fprintln(os.Stderr, "no links yet — `glyph link "+args[0]+" <other-id> --as related`")
 		}
 		return nil
 	},

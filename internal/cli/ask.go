@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -54,7 +55,7 @@ var askCmd = &cobra.Command{
 			return emitJSON(map[string]any{"facet": f, "hits": jsonGlyphs(f, gs)})
 		}
 		if len(gs) == 0 {
-			fmt.Println("no matches — try broader terms, or `glyph list` for recent glyphs")
+			fmt.Fprintln(os.Stderr, "no matches — try broader terms, or `glyph list` for recent glyphs")
 			return nil
 		}
 		fmt.Println(facet.List(f, gs))
