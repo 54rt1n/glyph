@@ -2,7 +2,9 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,6 +344,52 @@ func TestSearchWithFilter(t *testing.T) {
 	hits, err = s.Search("retrieval", 10, nil, ListFilter{Since: time.Now().Add(time.Hour)})
 	if err != nil || len(hits) != 0 {
 		t.Fatalf("future-since hits = %v err=%v", hits, err)
+	}
+}
+
+// TestSearchFilterOutranksCandidatePool guards the retrieval contract: a
+// filtered ask must find every match, even when far more non-matching glyphs
+// rank above it. Filtering used to run after the candidate pool was cut.
+func TestSearchFilterOutranksCandidatePool(t *testing.T) {
+	s := testStore(t)
+	// 60 notes that score higher on "alpha" than the one decision does.
+	for i := 0; i < 60; i++ {
+		mkGlyph(t, s, fmt.Sprintf("g-n%03x", i), "alpha alpha alpha alpha", "note", nil, nil)
+	}
+	mkGlyph(t, s, "g-dec1", strings.Repeat("filler words to dilute the score ", 40)+"alpha",
+		"decision", []string{"v0"}, nil)
+
+	for _, tt := range []struct {
+		name   string
+		filter ListFilter
+	}{
+		{"type", ListFilter{Type: "decision"}},
+		{"tag", ListFilter{Tag: "v0"}},
+		{"type and time", ListFilter{Type: "decision", Since: time.Now().Add(-time.Hour)}},
+	} {
+		hits, err := s.Search("alpha", 10, nil, tt.filter)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if len(hits) != 1 || hits[0].ID != "g-dec1" {
+			t.Fatalf("%s filter lost the match: hits = %v", tt.name, hits)
+		}
+	}
+
+	// The vector retriever carries the same predicate; exercise it with a
+	// filter so its bind order is covered, not just the unfiltered path.
+	for _, gid := range []string{"g-n000", "g-dec1"} {
+		if err := s.SetVec(gid, "fake", []float32{1, 0, 0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emb := &fakeEmbedder{vecs: map[string][]float32{"alpha": {1, 0, 0}}}
+	hits, err := s.Search("alpha", 10, emb, ListFilter{Type: "decision"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ID != "g-dec1" {
+		t.Fatalf("hybrid filtered hits = %v", hits)
 	}
 }
 

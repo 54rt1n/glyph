@@ -1,5 +1,9 @@
 // Package facet renders glyphs at progressive disclosure levels. All
 // commands share these renderers so density logic never forks.
+//
+// Renderers return glyph data only. Advisory notes — truncation, "no matches",
+// next-step hints — are the caller's to emit on stderr, so that stdout stays
+// parseable at every facet (notably --facet id, which agents pipe).
 package facet
 
 import (
@@ -122,9 +126,6 @@ func Traversal(t *types.Traversal, f types.Facet) string {
 		b.WriteString("\n")
 		writeTraversalChildren(&b, t, f, t.Root.ID, "")
 	}
-	if t.Truncated {
-		b.WriteString("\n… traversal truncated; raise --limit or reduce --depth")
-	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -139,9 +140,6 @@ func NeighborhoodTraversal(t *types.Traversal) string {
 	if len(t.Links) > 0 {
 		b.WriteString("\n\nneighbors:\n")
 		writeTraversalChildren(&b, t, types.FacetPin, t.Root.ID, "")
-	}
-	if t.Truncated {
-		b.WriteString("\n… neighborhood truncated")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -47,6 +48,9 @@ var showCmd = &cobra.Command{
 		}
 		if f == types.FacetNeighborhood {
 			fmt.Println(facet.NeighborhoodTraversal(traversal))
+			if traversal.Truncated {
+				fmt.Fprintln(os.Stderr, "… neighborhood truncated")
+			}
 		} else {
 			fmt.Println(facet.Render(f, g, nil))
 		}
