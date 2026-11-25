@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    if: ${{ !github.event.deleted }}
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: darwin-amd64
+            runner: macos-15-intel
+          - target: darwin-arm64
+            runner: macos-15
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Test
+        run: go test ./...
+      - name: Package and smoke test
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          test "$(go env GOOS)-$(go env GOARCH)" = "$TARGET"
+          package_dir="$(mktemp -d "$RUNNER_TEMP/glyph-package.XXXXXX")"
+          smoke_dir="$(mktemp -d "$RUNNER_TEMP/glyph-smoke.XXXXXX")"
+          mkdir -p dist
+          archive="dist/glyph_${GITHUB_REF_NAME}_${TARGET}.tar.gz"
+
+          go build -trimpath -ldflags '-s -w' -o "$package_dir/glyph" ./cmd/glyph
+          cp LICENSE NOTICE "$package_dir/"
+          tar -czf "$archive" -C "$package_dir" glyph LICENSE NOTICE
+
+          tar -xzf "$archive" -C "$smoke_dir"
+          cd "$smoke_dir"
+          ./glyph --version
+          ./glyph init
+          ./glyph etch "Glyph release smoke test"
+          ./glyph ask "smoke" | grep -F "Glyph release smoke test"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: glyph-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: glyph-*
+          path: dist
+          merge-multiple: true
+      - name: Publish archives and checksums
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum ./*.tar.gz > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" ./*.tar.gz SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
